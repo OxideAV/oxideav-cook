@@ -54,9 +54,12 @@ impl RmContainer {
         // Walk top-level chunks.
         while pos + 10 <= bytes.len() {
             let id = &bytes[pos..pos + 4];
-            let size =
-                u32::from_be_bytes([bytes[pos + 4], bytes[pos + 5], bytes[pos + 6], bytes[pos + 7]])
-                    as usize;
+            let size = u32::from_be_bytes([
+                bytes[pos + 4],
+                bytes[pos + 5],
+                bytes[pos + 6],
+                bytes[pos + 7],
+            ]) as usize;
             let chunk_end = pos.checked_add(size)?;
             if size < 10 || chunk_end > bytes.len() {
                 break;
@@ -93,8 +96,7 @@ impl RmContainer {
             let end = (start + data_size).min(bytes.len());
             while p + 12 <= end {
                 let _version = u16::from_be_bytes([bytes[p], bytes[p + 1]]);
-                let pkt_size =
-                    u16::from_be_bytes([bytes[p + 2], bytes[p + 3]]) as usize;
+                let pkt_size = u16::from_be_bytes([bytes[p + 2], bytes[p + 3]]) as usize;
                 if pkt_size < 12 || p + pkt_size > end {
                     break;
                 }
@@ -198,8 +200,8 @@ fn parse_mdpr(payload: &[u8]) -> Option<(Vec<u8>, u32, u16, u16, u16, u16)> {
         return None;
     }
     p += mime_len;
-    let tsd_size = u32::from_be_bytes([payload[p], payload[p + 1], payload[p + 2], payload[p + 3]])
-        as usize;
+    let tsd_size =
+        u32::from_be_bytes([payload[p], payload[p + 1], payload[p + 2], payload[p + 3]]) as usize;
     p += 4;
     if p + tsd_size > payload.len() {
         return None;
