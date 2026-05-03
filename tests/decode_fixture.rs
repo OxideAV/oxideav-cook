@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 
 use oxideav_core::time::TimeBase;
-use oxideav_core::{CodecId, CodecParameters, Decoder, Frame, Packet, SampleFormat};
+use oxideav_core::{CodecId, CodecParameters, Frame, Packet, SampleFormat};
 
 const FIXTURE_PATH: &str = "tests/fixtures/FUN_RM_32.rm";
 
@@ -150,7 +150,7 @@ impl RmContainer {
                     continue;
                 }
                 for x in 0..stripes {
-                    let slot = sps * (h * x + ((h + 1) / 2) * (y & 1) + (y >> 1));
+                    let slot = sps * (h * x + h.div_ceil(2) * (y & 1) + (y >> 1));
                     let dst_off = slot;
                     let src_off = x * sps;
                     if dst_off + sps <= scratch.len() {
