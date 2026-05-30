@@ -6,6 +6,14 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.2](https://github.com/OxideAV/oxideav-cook/releases/tag/v0.0.2) - 2026-05-30
+
+### Other
+
+- Round 2: vendor 8 extracted DSP tables with self-validating loaders
+- Round 1: flavor geometry table loader + extradata cookie parser
+- Round 0 — clean-room rebuild scaffold (orphan master)
+
 ### Added
 
 - Flavor geometry table loader: `flavor_record(index) -> Option<FlavorRecord>`
