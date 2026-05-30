@@ -30,10 +30,21 @@ numeric facts tables + real-stream validation).
   same configuration (channels, subband count, stereo mode, recovered
   samples-per-frame) as its named flavor record. Pinned against the real
   `FUN_RM_32.rm` stream (flavor 21) in `tests/cookie_realstream.rs`.
+- **DSP parameter tables** — [`crate::tables`](src/tables.rs) vendors
+  the eight remaining extracted numeric tables (two 127-entry
+  power-of-two ladders, per-category gain-step / gain-bias / level-count
+  triples, an 11-entry reciprocal table, a 51-entry monotone
+  category-index LUT, and the five Princen-Bradley MDCT half-windows
+  of lengths 3 / 7 / 15 / 31 / 64). Each loader is `OnceLock`-cached
+  and self-validates against the constraint stated in the matching
+  `.meta` provenance (e.g. f32-exact equality with `2^k`, TDAC identity
+  to better than 1e-3).
 
 ## Not yet implemented
 
 The transform (MDCT), gain/quantiser, and entropy decode pipeline, the
 `oxideav_core` registration glue, and the multichannel (`0x02000000`)
-backend selector. The public decode path still returns
+backend selector. The numeric tables the decode path will consume are
+all vendored and validated; what remains is the algorithm that wires
+them together. The public decode path still returns
 `Error::NotImplemented`.

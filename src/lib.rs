@@ -4,16 +4,29 @@
 //! implementation was retired alongside the OxideAV docs audit dated
 //! 2026-05-06. See `README.md` for the rebuild scope.
 //!
-//! Round 1 lands the stream-configuration front end: the per-flavor
+//! Round 1 landed the stream-configuration front end: the per-flavor
 //! [`flavor::flavor_record`] geometry-table loader and the extradata
 //! [`cookie::CookCookie`] parser, with a cross-check that a parsed cookie
-//! describes the same configuration as its named flavor record. The
-//! transform / entropy decode pipeline lands in later rounds.
+//! describes the same configuration as its named flavor record.
+//!
+//! Round 2 vendors the remaining eight DSP parameter tables extracted
+//! from the binary into [`tables`]: the two 127-entry power-of-two
+//! ladders, the per-category gain-step and gain-bias ramps, the per-
+//! category level-count clip, the 11-entry reciprocal table, the
+//! 51-entry monotone category-index LUT, and the five Princen-Bradley
+//! MDCT half-windows of lengths 3 / 7 / 15 / 31 / 64. Each loader is
+//! `OnceLock`-cached and self-validates against the constraint stated
+//! in its `.meta` provenance.
+//!
+//! The transform / entropy decode pipeline itself still lands in later
+//! rounds — [`Error::NotImplemented`] continues to gate the decode
+//! path.
 
 #![forbid(unsafe_code)]
 
 pub mod cookie;
 pub mod flavor;
+pub mod tables;
 
 pub use cookie::CookCookie;
 pub use flavor::{flavor_record, FlavorRecord, FLAVOR_COUNT};

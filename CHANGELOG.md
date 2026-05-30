@@ -18,6 +18,14 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   record (`matches_flavor`). Pinned against the real `FUN_RM_32.rm`
   stream (flavor 21) in `tests/cookie_realstream.rs`.
 - `Error::CookieTooShort` and `Error::UnsupportedSelector` variants.
+- `tables` module vendoring the remaining eight extracted DSP parameter
+  tables (two 127-entry power-of-two ladders, per-category gain-step /
+  gain-bias / level-count triples, the 11-entry reciprocal averaging
+  table, the 51-entry monotone category-index LUT, and the five
+  Princen-Bradley MDCT half-windows of lengths 3 / 7 / 15 / 31 / 64),
+  each `OnceLock`-cached and self-validating against the constraint
+  stated in its clean-room `.meta` (f32-exact equality with `2^k`, TDAC
+  identity, monotonicity).
 
 ### Changed
 
