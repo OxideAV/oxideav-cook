@@ -6,6 +6,35 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `init` module: `DecodeConfig::from_inputs(cookie, descriptor, flavor,
+  frame_bytes)` wires the per-stream open-time geometry pinned by
+  `docs/audio/cook/validation/04-cook-stream-validation.md`. The
+  derived config records `sub_packets_per_call = frame_bytes /
+  sub_packet_size` and the steady-state PCM budget
+  `pcm_bytes_per_call = sub_packets_per_call × samples_per_frame ×
+  channels × 2`, plus `warmup_pcm_bytes` (two-frame first-call
+  overlap-add) and `total_pcm_bytes(calls)` accounting. Rejects every
+  divide-by-zero (`+0x06 = 0`, `+0x0a = 0`), cookie/flavor mismatch,
+  and non-integer `frame_bytes / sub_packet_size` ratio.
+- `Descriptor` struct mirroring the two `RAInitDecoder` `u16` scalars
+  (`channels_divisor = +0x06`, `sub_packet_size = +0x0a`) named by
+  their validated runtime role.
+- `RADECODE_FLAGS_DECODE = 1` public constant: the validator-pinned
+  `RADecode` `flags` value that enables backend frame-decode
+  (`(~flags) & 1 = 0` reaches the backend's decode/observe gate).
+- `PCM_BYTES_PER_SAMPLE = 2` public constant pinning the 16-bit
+  LE sample format the decoder emits.
+- `Error::ZeroDivisorChannels`, `Error::ZeroDivisorSubPacketSize`,
+  `Error::CookieFlavorMismatch`,
+  `Error::FrameNotDivisibleBySubPacket { frame_bytes, sub_packet_size }`
+  for the new init-time rejections.
+- `tests/realstream_decode_config.rs`: end-to-end cross-check of the
+  derived `DecodeConfig` against the `FUN_RM_32.rm` numbers (144
+  `RADecode` calls → 2 936 832 PCM bytes total; 20 480 bytes per
+  steady-state call; 8 192 first-call warm-up; 16.649 s wall-clock).
+
 ## [0.0.2](https://github.com/OxideAV/oxideav-cook/releases/tag/v0.0.2) - 2026-05-30
 
 ### Other
