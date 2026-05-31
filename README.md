@@ -55,6 +55,24 @@ numeric facts tables + real-stream validation).
   decode-gate constant `RADECODE_FLAGS_DECODE = 1` is the
   validator-pinned value (`(~flags) & 1` is the backend's
   decode/observe gate).
+- **Real-stream wire-level cross-check** — a 68 KB RealAudio Cook
+  stream (`tests/fixtures/FUN_RM_32.rm`, SHA-256
+  `ae7804…45d5c`) is bundled with the crate and parsed end-to-end by
+  [`tests/realstream_fixture.rs`](tests/realstream_fixture.rs). The
+  test walks the top-level RealMedia chunk sequence
+  (`.RMF`(18) / `PROP`(50) / `MDPR`(172) / `MDPR`(627) / `CONT`(26) /
+  `DATA`(68706)), recovers the 16-byte Cook cookie from the audio
+  `MDPR`'s 94-byte type-specific-data (anchored by the trailing
+  lead-in `01 07 00 00 00 00 00 10`), walks all 144 audio packets
+  (`[12 B header][465 B payload]`), and feeds the result into
+  `DecodeConfig`. Every measurement matches the validator
+  (`docs/audio/cook/validation/04-cook-stream-validation.md`)
+  byte-for-byte: file SHA-256, every chunk size, the 144-packet ×
+  465-byte payload framing, the 5 sub-packets per `RADecode` call,
+  the 20 480-byte steady-state PCM budget, the 8 192-byte first-call
+  overlap-add warm-up, and the 2 936 832-byte total PCM accounting
+  for all 144 calls (16.649 s at stereo 44 100 Hz). A self-contained
+  embedded SHA-256 keeps the crate dependency-free.
 
 ## Not yet implemented
 

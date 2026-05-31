@@ -29,6 +29,16 @@
 //! samples_per_frame × channels × 2`). Pinned end-to-end against the
 //! real `FUN_RM_32.rm` stream (`tests/realstream_decode_config.rs`).
 //!
+//! Round 4 vendors that real stream into the crate as
+//! `tests/fixtures/FUN_RM_32.rm` and bundles a wire-level integration
+//! test (`tests/realstream_fixture.rs`) that parses the RealMedia
+//! container directly, walks every audio packet, extracts the cookie
+//! from the audio `MDPR`'s type-specific-data, and feeds the result
+//! through [`DecodeConfig`] — cross-checking the fixture's SHA-256,
+//! every top-level chunk size, the 144-packet × 465-byte payload
+//! framing, and the validator's 2 936 832-byte total PCM accounting
+//! against the bundled wire bytes byte-for-byte.
+//!
 //! The transform / entropy decode pipeline itself still lands in later
 //! rounds — [`Error::NotImplemented`] continues to gate the decode
 //! path.
@@ -40,7 +50,7 @@ pub mod flavor;
 pub mod init;
 pub mod tables;
 
-pub use cookie::CookCookie;
+pub use cookie::{CookCookie, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
 pub use flavor::{flavor_record, FlavorRecord, FLAVOR_COUNT};
 pub use init::{DecodeConfig, Descriptor, PCM_BYTES_PER_SAMPLE, RADECODE_FLAGS_DECODE};
 

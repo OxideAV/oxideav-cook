@@ -8,6 +8,29 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `tests/realstream_fixture.rs`: wire-level cross-check of the bundled
+  `tests/fixtures/FUN_RM_32.rm` RealMedia file against
+  `docs/audio/cook/validation/04-cook-stream-validation.md`. The test
+  pins the fixture's SHA-256
+  (`ae7804ce179f7d8d907f67ac3e17c0da560e05c7730e1c45a04c1d19a2e45d5c`),
+  walks the top-level chunk sequence
+  (`.RMF`(18) / `PROP`(50) / `MDPR`(172) / `MDPR`(627) / `CONT`(26) /
+  `DATA`(68706)), extracts the 16-byte Cook cookie from the audio
+  `MDPR`'s 94-byte type-specific-data (anchored at the trailing
+  `01 07 00 00 00 00 00 10` lead-in), walks all 144 audio packets in
+  `DATA` (each `[12-byte packet header][465-byte payload]`), and feeds
+  the result through `DecodeConfig::from_inputs` to confirm the
+  validator's 5 sub-packets/call, 20 480 PCM bytes/call steady-state,
+  8 192-byte first-call warm-up, and 2 936 832-byte total PCM
+  accounting hold bit-for-bit on the bundled bitstream. The test
+  carries its own embedded SHA-256 so the crate stays dependency-free.
+- `tests/fixtures/FUN_RM_32.rm` (69 765 B): real RealAudio Cook stream
+  (flavor 21, stereo 44 100 Hz, 1024-sample frames, 32 subbands) used
+  by the new integration test. Mirrors the validator's fixture under
+  `docs/audio/cook/fixtures/`; the bundled copy keeps the published
+  crate self-contained.
+- `EXTENDED_COOKIE_LEN` and `SELECTOR_EXTENDED` re-exports at the crate
+  root for downstream consumers building their own RealMedia demuxers.
 - `init` module: `DecodeConfig::from_inputs(cookie, descriptor, flavor,
   frame_bytes)` wires the per-stream open-time geometry pinned by
   `docs/audio/cook/validation/04-cook-stream-validation.md`. The
