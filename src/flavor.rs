@@ -90,6 +90,42 @@ pub fn flavor_record(index: u8) -> Option<FlavorRecord> {
         .and_then(FlavorRecord::parse_line)
 }
 
+/// Iterator over every well-formed `(index, record)` pair in the
+/// vendored geometry table.
+///
+/// Visits exactly [`FLAVOR_COUNT`] (= 31) pairs, in table order from
+/// index `0` to index `30`. The closing pair (index 30) is the
+/// single-subband sentinel (`subband_count = 1`) called out by
+/// `docs/audio/cook/spec/02-cook-flavor-and-extradata-layout.md`
+/// §1.1.
+pub fn iter_flavor_records() -> impl Iterator<Item = (u8, FlavorRecord)> {
+    data_lines()
+        .enumerate()
+        .filter_map(|(i, l)| FlavorRecord::parse_line(l).map(|r| (i as u8, r)))
+}
+
+/// Return every flavor index whose geometry record matches the five
+/// fields a cookie itself carries (channels, subband count, stereo
+/// mode, and `samples_per_frame` recovered from the cookie's
+/// `[4..6]` product divided by the cookie's channel count).
+///
+/// A cookie does **not** carry `frame_bytes`, `sample_rate_hz`, or
+/// `coupling_mode`, so multiple flavor records can describe the same
+/// cookie — most notably on the bundled real stream (`flavor_record(21)`
+/// and `flavor_record(22)` both agree with its cookie; the container's
+/// `coded_frame_size` is what selects between them). Returns the
+/// possibly-multi-element list in table order so callers can
+/// disambiguate with container-supplied geometry.
+///
+/// Anchored by `docs/audio/cook/validation/04-cook-stream-validation.md`
+/// §4.1 (the cookie field-set) and §4.4 (record-21 cross-check).
+pub fn flavor_indices_matching_cookie(cookie: &crate::cookie::CookCookie) -> Vec<u8> {
+    iter_flavor_records()
+        .filter(|(_, r)| cookie.matches_flavor(r))
+        .map(|(i, _)| i)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,5 +186,69 @@ mod tests {
     fn out_of_range_index_is_none() {
         assert!(flavor_record(FLAVOR_COUNT).is_none());
         assert!(flavor_record(u8::MAX).is_none());
+    }
+
+    #[test]
+    fn iter_visits_every_record_in_order() {
+        let collected: Vec<(u8, FlavorRecord)> = iter_flavor_records().collect();
+        assert_eq!(collected.len(), FLAVOR_COUNT as usize);
+        for (i, (idx, rec)) in collected.iter().enumerate() {
+            assert_eq!(*idx, i as u8, "iter must visit indices in order");
+            assert_eq!(Some(*rec), flavor_record(*idx));
+        }
+        // Spec/02 §1.1 sentinel: index 30 is the single-subband entry.
+        let (last_idx, last_rec) = collected.last().copied().unwrap();
+        assert_eq!(last_idx, FLAVOR_COUNT - 1);
+        assert_eq!(last_rec.subband_count, 1);
+    }
+
+    #[test]
+    fn cookie_matches_both_record_21_and_22_for_real_stream() {
+        // The cookie carries (channels, subband_count, stereo_mode,
+        // samples_per_frame); the real FUN_RM_32.rm cookie produces
+        // (2, 32, 4, 1024). Records 21 and 22 both share that 4-tuple
+        // and differ only in `frame_bytes` (744 vs 1024). This pins
+        // the cookie ambiguity called out in
+        // `docs/audio/cook/validation/04-cook-stream-validation.md`
+        // §4.4 and is the reason `DecodeConfig::from_inputs` takes
+        // a `frame_bytes` argument separately.
+        const REAL_COOKIE: [u8; 16] = [
+            0x01, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
+            0x00, 0x04,
+        ];
+        let c = crate::cookie::CookCookie::parse(&REAL_COOKIE).unwrap();
+        let matches = flavor_indices_matching_cookie(&c);
+        assert!(
+            matches.contains(&21),
+            "record 21 must match real-stream cookie: {matches:?}"
+        );
+        assert!(
+            matches.contains(&22),
+            "record 22 must match real-stream cookie (frame_bytes differs): {matches:?}"
+        );
+        // The two matching records differ only in frame_bytes; the
+        // cookie cannot disambiguate.
+        for idx in &matches {
+            let r = flavor_record(*idx).unwrap();
+            assert_eq!(r.channels, 2);
+            assert_eq!(r.subband_count, 32);
+            assert_eq!(r.stereo_mode, 4);
+            assert_eq!(r.samples_per_frame, 1024);
+        }
+    }
+
+    #[test]
+    fn unmatchable_cookie_returns_empty() {
+        // Construct a cookie whose 5 fields cannot describe any
+        // vendored record (subband count 99 is outside every record).
+        let bogus = crate::cookie::CookCookie {
+            selector: crate::cookie::SELECTOR_EXTENDED,
+            samples_per_frame_x_channels: 2048,
+            subband_count: 99,
+            reserved: 0,
+            channels: 2,
+            stereo_mode: 4,
+        };
+        assert!(flavor_indices_matching_cookie(&bogus).is_empty());
     }
 }

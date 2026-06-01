@@ -51,7 +51,9 @@ pub mod init;
 pub mod tables;
 
 pub use cookie::{CookCookie, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
-pub use flavor::{flavor_record, FlavorRecord, FLAVOR_COUNT};
+pub use flavor::{
+    flavor_indices_matching_cookie, flavor_record, iter_flavor_records, FlavorRecord, FLAVOR_COUNT,
+};
 pub use init::{DecodeConfig, Descriptor, PCM_BYTES_PER_SAMPLE, RADECODE_FLAGS_DECODE};
 
 /// Crate-local error type. Concrete variants land as the rebuild rounds

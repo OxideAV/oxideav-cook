@@ -12,7 +12,10 @@
 //!   samples × 2 ch × 2 bytes)
 //! - 8 192 PCM bytes on the first call (one frame, overlap-add warm-up)
 
-use oxideav_cook::{flavor_record, CookCookie, DecodeConfig, Descriptor, RADECODE_FLAGS_DECODE};
+use oxideav_cook::{
+    flavor_indices_matching_cookie, flavor_record, CookCookie, DecodeConfig, Descriptor,
+    RADECODE_FLAGS_DECODE,
+};
 
 /// Validated 16-byte extradata cookie.
 const FUN_RM_32_COOKIE: [u8; 16] = [
@@ -103,4 +106,36 @@ fn fun_rm_32_decode_config_matches_validator() {
         (secs - 16.649).abs() < 1e-3,
         "decoded duration {secs:.3}s should match validator's 16.649 s"
     );
+}
+
+#[test]
+fn fun_rm_32_cookie_matches_records_21_and_22() {
+    // The cookie carries (channels, subband_count, stereo_mode,
+    // samples_per_frame) but NOT (frame_bytes, sample_rate_hz,
+    // coupling_mode), so multiple flavor records can agree with it.
+    // On the validated FUN_RM_32.rm stream the cookie's 4-tuple is
+    // (2, 32, 4, 1024), which records 21 and 22 share — they differ
+    // only in `frame_bytes` (744 vs 1024). The container's
+    // `coded_frame_size=465` cannot disambiguate by equality either;
+    // the .ra5 header's explicit `flavor=21` is what selects the
+    // correct record at open time.
+    let cookie = CookCookie::parse(&FUN_RM_32_COOKIE).expect("cookie parses");
+    let matches = flavor_indices_matching_cookie(&cookie);
+    assert!(
+        matches.contains(&21),
+        "record 21 should match real-stream cookie: {matches:?}"
+    );
+    assert!(
+        matches.contains(&22),
+        "record 22 should also match real-stream cookie: {matches:?}"
+    );
+    // No record outside the (channels=2, subband=32, stereo_mode=4,
+    // spf=1024) 4-tuple may appear.
+    for idx in &matches {
+        let r = flavor_record(*idx).expect("matching record present");
+        assert_eq!(r.channels, 2);
+        assert_eq!(r.subband_count, 32);
+        assert_eq!(r.stereo_mode, 4);
+        assert_eq!(r.samples_per_frame, 1024);
+    }
 }

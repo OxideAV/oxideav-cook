@@ -23,7 +23,16 @@ numeric facts tables + real-stream validation).
   channels, samples-per-frame, subband count, frame bytes, coupling /
   stereo mode) from the vendored facts table
   `tables/flavor-geometry-table.csv`, parsed on demand so no numbers are
-  retyped into source.
+  retyped into source. [`iter_flavor_records()`](src/flavor.rs) walks
+  every `(index, record)` pair in table order;
+  [`flavor_indices_matching_cookie(cookie)`](src/flavor.rs) returns
+  every record whose four cookie-checkable fields (channels, subband
+  count, stereo mode, recovered samples-per-frame) agree with a parsed
+  cookie — a cookie does not carry `frame_bytes` / `sample_rate_hz` /
+  `coupling_mode`, so the real `FUN_RM_32.rm` cookie legitimately
+  matches both records 21 and 22 (they differ only in `frame_bytes`,
+  744 vs 1024) and the container-supplied `flavor` index is what
+  disambiguates at open time.
 - **Extradata cookie parser** — [`CookCookie::parse`](src/cookie.rs)
   reads the big-endian per-stream extradata cookie for the extended
   (`>= 0x01000003`) selector and cross-checks that it self-describes the

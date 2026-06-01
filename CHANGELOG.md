@@ -8,6 +8,25 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `flavor::iter_flavor_records()`: iterator over every well-formed
+  `(index, FlavorRecord)` pair in the vendored geometry table (exactly
+  `FLAVOR_COUNT` = 31 pairs, in table order, ending on the
+  single-subband sentinel at index 30 called out by `docs/audio/cook/
+  spec/02-cook-flavor-and-extradata-layout.md` §1.1).
+- `flavor::flavor_indices_matching_cookie(cookie)`: returns every
+  flavor index whose record agrees with the four-tuple a cookie itself
+  carries (channels, subband count, stereo mode, recovered
+  samples-per-frame). On the validated `FUN_RM_32.rm` stream this
+  returns both **21 and 22** because the cookie does not carry
+  `frame_bytes` — they share `(channels=2, subband_count=32,
+  stereo_mode=4, samples_per_frame=1024)` and differ only in
+  `frame_bytes` (744 vs 1024). Pinned by `docs/audio/cook/validation/
+  04-cook-stream-validation.md` §4.1 (cookie field-set) and §4.4
+  (record-21 cross-check).
+- `tests/realstream_decode_config.rs`:
+  `fun_rm_32_cookie_matches_records_21_and_22` exercises the new
+  multi-match API on the real-stream cookie and pins the four shared
+  fields across every matching record.
 - `tests/realstream_fixture.rs`: wire-level cross-check of the bundled
   `tests/fixtures/FUN_RM_32.rm` RealMedia file against
   `docs/audio/cook/validation/04-cook-stream-validation.md`. The test
