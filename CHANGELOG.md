@@ -8,6 +8,31 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `descramble` module: the per-buffer XOR descramble — the first
+  byte-touching stage of the `RADecode` decode driver. `xor_descramble`
+  / `xor_descramble_into` run the word-wise (32-bit, little-endian) XOR
+  pass; `xor_key(in_ptr, in_len)` computes the binary's per-call key
+  `input_ptr ^ input_len` from explicit `u32` factors (no unsafe
+  pointer-to-int). A trailing partial word (`len % 4 != 0`) is copied
+  verbatim — a recorded tail-handling DOCS-GAP, the conservative
+  self-inverse-preserving choice. Pinned by `docs/audio/cook/spec/
+  01-cook-decoder-structure.md` §5 (the `0x1283` loop + Round-3 audit
+  clarification) and `docs/audio/cook/validation/04-cook-stream-
+  validation.md` §4.3.
+- `CommonMode` toggle (`off()` / `on()` / `is_on()`) mirroring the
+  context `+0x30` flag that gates the XOR pass: zero-initialised (off)
+  by the constructor, set to `1` by `RASetComMode` (spec/01 §2). With
+  `descramble_packet(common_mode, packet, key)` the off-path returns the
+  input verbatim as a zero-copy `Cow::Borrowed` — the validated
+  real-stream path (validation/04 §4.3 / §5) — and the on-path runs the
+  XOR pass into a `Cow::Owned`.
+- `tests/descramble_realstream.rs`: walks the bundled `FUN_RM_32.rm` to
+  its 144 validated 465-byte audio payloads and confirms
+  `descramble_packet(CommonMode::off(), pkt, 0)` is a byte-identical
+  zero-copy `Cow::Borrowed`, and that the on-path is self-inverse and
+  byte-count-preserving on the first packet and mid-stream packet 100
+  for two arbitrary keys (the on-path has no bit-exact validator ground
+  truth, so only its algebraic properties are pinned).
 - `flavor::iter_flavor_records()`: iterator over every well-formed
   `(index, FlavorRecord)` pair in the vendored geometry table (exactly
   `FLAVOR_COUNT` = 31 pairs, in table order, ending on the

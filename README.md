@@ -82,6 +82,23 @@ numeric facts tables + real-stream validation).
   overlap-add warm-up, and the 2 936 832-byte total PCM accounting
   for all 144 calls (16.649 s at stereo 44 100 Hz). A self-contained
   embedded SHA-256 keeps the crate dependency-free.
+- **Per-buffer XOR descramble** — [`descramble`](src/descramble.rs) is
+  the first byte-touching stage of the `RADecode` decode driver: a
+  word-wise (32-bit, little-endian) XOR pass over the input, keyed by
+  `xor_key(in_ptr, in_len) = input_ptr ^ input_len`. The pass is gated
+  by the [`CommonMode`](src/descramble.rs) flag (context `+0x30`,
+  set by `RASetComMode`); the constructor default is **off**, so
+  `descramble_packet(CommonMode::off(), pkt, key)` returns the packet
+  verbatim as a zero-copy `Cow::Borrowed` — exactly the validated
+  real-stream path
+  (`docs/audio/cook/validation/04-cook-stream-validation.md` §4.3 / §5,
+  which fed the 144 packets straight from the container, 144/144 S_OK).
+  The on-path (XOR enabled) has no bit-exact validator ground truth, so
+  its tests pin only the algebraic properties (self-inverse, byte-count
+  preservation) on the real `FUN_RM_32.rm` packets in
+  `tests/descramble_realstream.rs`. The trailing partial word
+  (`len % 4 != 0`) is copied verbatim — a recorded tail-handling
+  DOCS-GAP.
 
 ## Not yet implemented
 

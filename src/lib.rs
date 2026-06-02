@@ -39,6 +39,15 @@
 //! framing, and the validator's 2 936 832-byte total PCM accounting
 //! against the bundled wire bytes byte-for-byte.
 //!
+//! Round 6 wires the first real decode-pipeline byte stage: the
+//! per-buffer XOR [`descramble`]. `RADecode`'s first byte-touching step
+//! is a word-wise (32-bit) XOR pass over the input, gated by the
+//! common-mode flag at context `+0x30` ([`CommonMode`], toggled on by
+//! `RASetComMode`). The default is off, so [`descramble_packet`] returns
+//! the packet verbatim and zero-copy — exactly the validated real-stream
+//! path (`validation/04` §4.3 / §5). The toolkit grows; the public
+//! decode path still returns [`Error::NotImplemented`].
+//!
 //! The transform / entropy decode pipeline itself still lands in later
 //! rounds — [`Error::NotImplemented`] continues to gate the decode
 //! path.
@@ -46,11 +55,13 @@
 #![forbid(unsafe_code)]
 
 pub mod cookie;
+pub mod descramble;
 pub mod flavor;
 pub mod init;
 pub mod tables;
 
 pub use cookie::{CookCookie, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
+pub use descramble::{descramble_packet, xor_descramble, xor_descramble_into, xor_key, CommonMode};
 pub use flavor::{
     flavor_indices_matching_cookie, flavor_record, iter_flavor_records, FlavorRecord, FLAVOR_COUNT,
 };
