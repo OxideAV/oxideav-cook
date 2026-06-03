@@ -8,6 +8,28 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `subpacket` module: `SubPacketLayout::from_config(&DecodeConfig)`
+  derives the per-`RADecode` sub-packet split the driver `cook.dll!
+  0x1260` enforces — `sub_packets_per_call` fixed-stride slots of
+  `sub_packet_size` bytes each within one call's `frame_bytes`-byte
+  input — and the validator-pinned PCM offset accounting (first-call
+  warm-up + steady-state cadence). API: `slot_byte_range(slot)`,
+  `call_byte_range(call_idx, slot)`, `iter_call(input)`,
+  `pcm_offset_for_call(call_idx)`, `total_pcm_bytes(calls)`. Pinned by
+  `docs/audio/cook/spec/01-cook-decoder-structure.md` §5 + `docs/audio/
+  cook/validation/04-cook-stream-validation.md` §5.
+- `Error::SlotOutOfRange { slot, slots_per_call }` /
+  `Error::SubPacketInputLengthMismatch { got, expected }` variants for
+  the new `subpacket` misuse rejections.
+- `tests/subpacket_realstream.rs`: walks the bundled `FUN_RM_32.rm` to
+  its 144 validated 465-byte payloads and confirms
+  `SubPacketLayout::iter_call(packet)` partitions each into exactly 5 ×
+  93-byte sub-packets that round-trip to the input; that the whole-
+  stream `call_byte_range` values tile the 144 × 465 = 66 960-byte
+  audio input with no gap or overlap; and that
+  `pcm_offset_for_call(144) = 2 936 832` reproduces the validator's
+  total-PCM figure exactly, with every adjacent pair after the warm-up
+  advancing by the steady-state 20 480-byte budget.
 - `SelectorFamily` enum + `SelectorFamily::classify(selector)` /
   `::is_parser_supported(selector)` API in `cookie`, classifying the
   cookie's leading 32-bit selector by the backend family the

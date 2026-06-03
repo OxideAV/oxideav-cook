@@ -96,6 +96,27 @@ numeric facts tables + real-stream validation).
   overlap-add warm-up, and the 2 936 832-byte total PCM accounting
   for all 144 calls (16.649 s at stereo 44 100 Hz). A self-contained
   embedded SHA-256 keeps the crate dependency-free.
+- **Per-`RADecode` sub-packet split + PCM offset accounting** —
+  [`SubPacketLayout`](src/subpacket.rs) is the second byte-touching
+  structural stage of the `RADecode` decode driver
+  (`docs/audio/cook/spec/01-cook-decoder-structure.md` §5,
+  `docs/audio/cook/validation/04-cook-stream-validation.md` §5). Derived
+  from a wired [`DecodeConfig`], it partitions one `RADecode`-call input
+  into `sub_packets_per_call` consecutive fixed-stride slots of
+  `sub_packet_size` bytes ([`slot_byte_range`](src/subpacket.rs),
+  [`call_byte_range`](src/subpacket.rs),
+  [`iter_call`](src/subpacket.rs)). On the validated `FUN_RM_32.rm`
+  stream that is 144 `RADecode` calls × 5 sub-packets × 93 bytes; the
+  whole-stream ranges tile the concatenated 144 × 465 = 66 960-byte
+  audio input with no gap or overlap, and
+  [`pcm_offset_for_call`](src/subpacket.rs) reproduces the validator's
+  first-call 8 192-byte overlap-add warm-up + steady-state 20 480
+  bytes/call cadence, summing to the pinned 2 936 832-byte total at
+  call 144. Pinned end-to-end against all 144 real packets in
+  `tests/subpacket_realstream.rs`. The backend frame-decode + carry-
+  buffer state machine itself (stage 3 of the driver, `[backend_vtable
+  + 0x0c]`) is still typed as `Error::NotImplemented` — it needs the
+  backend bitstream reader, which lands in a later round.
 - **Per-buffer XOR descramble** — [`descramble`](src/descramble.rs) is
   the first byte-touching stage of the `RADecode` decode driver: a
   word-wise (32-bit, little-endian) XOR pass over the input, keyed by

@@ -48,6 +48,21 @@
 //! path (`validation/04` §4.3 / §5). The toolkit grows; the public
 //! decode path still returns [`Error::NotImplemented`].
 //!
+//! Round 8 wires the second structural decode-pipeline stage: the per-
+//! `RADecode` sub-packet split + PCM offset accounting in [`subpacket`].
+//! After the optional XOR descramble, `RADecode` (`cook.dll!0x1260`)
+//! partitions its `frame_bytes`-byte input into `sub_packets_per_call`
+//! consecutive fixed-stride slots of `sub_packet_size` bytes each
+//! ([`SubPacketLayout::iter_call`], [`SubPacketLayout::slot_byte_range`],
+//! [`SubPacketLayout::call_byte_range`]) and emits PCM at the validator-
+//! pinned cadence (first-call 8 192-byte overlap-add warm-up,
+//! steady-state 20 480 bytes/call —
+//! [`SubPacketLayout::pcm_offset_for_call`]). Pinned end-to-end against
+//! the 144 real packets of `FUN_RM_32.rm` in
+//! `tests/subpacket_realstream.rs`. The backend frame-decode + carry-
+//! buffer state machine (stage 3, `[backend_vtable + 0x0c]`) is still
+//! [`Error::NotImplemented`].
+//!
 //! The transform / entropy decode pipeline itself still lands in later
 //! rounds — [`Error::NotImplemented`] continues to gate the decode
 //! path.
@@ -58,6 +73,7 @@ pub mod cookie;
 pub mod descramble;
 pub mod flavor;
 pub mod init;
+pub mod subpacket;
 pub mod tables;
 
 pub use cookie::{CookCookie, SelectorFamily, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
@@ -66,6 +82,7 @@ pub use flavor::{
     flavor_indices_matching_cookie, flavor_record, iter_flavor_records, FlavorRecord, FLAVOR_COUNT,
 };
 pub use init::{DecodeConfig, Descriptor, PCM_BYTES_PER_SAMPLE, RADECODE_FLAGS_DECODE};
+pub use subpacket::SubPacketLayout;
 
 /// Crate-local error type. Concrete variants land as the rebuild rounds
 /// populate the codec pipeline.
@@ -138,6 +155,22 @@ pub enum Error {
         /// Descriptor `+0x0a`.
         sub_packet_size: u16,
     },
+    /// A sub-packet slot index was out of range for the per-call
+    /// partition (`slot >= sub_packets_per_call`).
+    SlotOutOfRange {
+        /// The supplied slot index.
+        slot: u32,
+        /// The wired sub-packets-per-call count.
+        slots_per_call: u32,
+    },
+    /// An input buffer supplied to [`SubPacketLayout::iter_call`] did
+    /// not have length [`SubPacketLayout::frame_bytes`].
+    SubPacketInputLengthMismatch {
+        /// The buffer length actually supplied.
+        got: usize,
+        /// The required per-call input length (= `frame_bytes`).
+        expected: usize,
+    },
 }
 
 impl core::fmt::Display for Error {
@@ -183,6 +216,19 @@ impl core::fmt::Display for Error {
                 f,
                 "oxideav-cook: frame_bytes {frame_bytes} is not an integer multiple of \
                  sub_packet_size {sub_packet_size}"
+            ),
+            Error::SlotOutOfRange {
+                slot,
+                slots_per_call,
+            } => write!(
+                f,
+                "oxideav-cook: sub-packet slot {slot} out of range \
+                 (slots_per_call = {slots_per_call})"
+            ),
+            Error::SubPacketInputLengthMismatch { got, expected } => write!(
+                f,
+                "oxideav-cook: sub-packet input length {got} does not match the per-call \
+                 frame_bytes {expected}"
             ),
         }
     }
