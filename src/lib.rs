@@ -60,7 +60,7 @@ pub mod flavor;
 pub mod init;
 pub mod tables;
 
-pub use cookie::{CookCookie, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
+pub use cookie::{CookCookie, SelectorFamily, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
 pub use descramble::{descramble_packet, xor_descramble, xor_descramble_into, xor_key, CommonMode};
 pub use flavor::{
     flavor_indices_matching_cookie, flavor_record, iter_flavor_records, FlavorRecord, FLAVOR_COUNT,
@@ -79,8 +79,44 @@ pub enum Error {
         got: usize,
     },
     /// An extradata cookie carried a selector this parser does not handle.
+    ///
+    /// Returned for any value the backend factory `cook.dll!0x1c60`
+    /// would reject with `0x80040005`. The two GAP families
+    /// ([`Error::NonExtendedSelectorNotSupported`],
+    /// [`Error::MultichannelSelectorNotSupported`]) carry their own
+    /// variants so callers can distinguish "binary rejects" from
+    /// "parser-scope GAP" without re-parsing the selector.
     UnsupportedSelector {
         /// The leading 32-bit selector value read from the blob.
+        selector: u32,
+    },
+    /// Cookie's leading selector is a recognised mono/stereo Cook
+    /// backend selector (`0x01000001` or `0x01000002`) but **not** the
+    /// extended-layout selector [`SELECTOR_EXTENDED`].
+    ///
+    /// The init worker `cook.dll!0x1420` would build the same
+    /// mono/stereo backend, but it reads a shorter cookie layout that
+    /// `docs/audio/cook/spec/01-cook-decoder-structure.md` §3 does not
+    /// pin — a recorded DOCS-GAP. Distinct from
+    /// [`Error::UnsupportedSelector`] so consumers can hand this stream
+    /// to a future shorter-cookie parser without losing the typing.
+    NonExtendedSelectorNotSupported {
+        /// The leading 32-bit selector value read from the blob.
+        selector: u32,
+    },
+    /// Cookie's leading selector is the multichannel ("RealAudio 10"
+    /// 5.1) backend selector `0x02000000`.
+    ///
+    /// The backend factory `cook.dll!0x1c60` would dispatch to the
+    /// distinct multichannel backend (constructor `0x2260`), but the
+    /// per-stream cookie layout it consumes is not pinned by spec/01
+    /// §3 or by the validator (the validated `FUN_RM_32.rm` stream is
+    /// stereo) — a recorded DOCS-GAP. Distinct from
+    /// [`Error::UnsupportedSelector`] so a future multichannel parser
+    /// can be added without losing the typed dispatch.
+    MultichannelSelectorNotSupported {
+        /// The leading 32-bit selector value read from the blob
+        /// (always `0x02000000`).
         selector: u32,
     },
     /// `RAInitDecoder` descriptor `+0x06` (`channels_divisor`) was `0`;
@@ -119,6 +155,16 @@ impl core::fmt::Display for Error {
                     "oxideav-cook: unsupported cookie selector {selector:#010x}"
                 )
             }
+            Error::NonExtendedSelectorNotSupported { selector } => write!(
+                f,
+                "oxideav-cook: cookie selector {selector:#010x} is a non-extended mono/stereo \
+                 sibling (cookie layout not pinned by spec/01 §3 — DOCS-GAP)"
+            ),
+            Error::MultichannelSelectorNotSupported { selector } => write!(
+                f,
+                "oxideav-cook: cookie selector {selector:#010x} is the multichannel backend \
+                 (cookie layout not pinned by spec/01 §3 — DOCS-GAP)"
+            ),
             Error::ZeroDivisorChannels => f.write_str(
                 "oxideav-cook: descriptor channels_divisor (+0x06) is 0 \
                  (would divide-by-zero in backend init 0x20c0)",

@@ -8,6 +8,39 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `SelectorFamily` enum + `SelectorFamily::classify(selector)` /
+  `::is_parser_supported(selector)` API in `cookie`, classifying the
+  cookie's leading 32-bit selector by the backend family the
+  proprietary decoder's factory `cook.dll!0x1c60` would dispatch to
+  (spec/01 §3.1): `MonoStereo` covers `0x01000001` / `0x01000002` /
+  `0x01000003`, `Multichannel` covers `0x02000000`, and every other
+  value is reported as `Unsupported`. `CookCookie::family()` returns
+  the family of a parsed cookie (always `MonoStereo` today).
+- `Error::NonExtendedSelectorNotSupported { selector }` returned by
+  `CookCookie::parse` for the documented MonoStereo siblings
+  `0x01000001` / `0x01000002` — same backend family as the validated
+  `0x01000003` stream but a shorter cookie layout that spec/01 §3
+  does not pin (DOCS-GAP). Distinct from `UnsupportedSelector` so a
+  future shorter-cookie parser can be added without typed downstream
+  callers losing their dispatch.
+- `Error::MultichannelSelectorNotSupported { selector }` returned by
+  `CookCookie::parse` for the multichannel `0x02000000` family
+  (spec/01 §3.1). The backend factory would dispatch to the distinct
+  multichannel backend (constructor `0x2260`); cookie body layout is
+  not pinned by spec or the validator (the validated `FUN_RM_32.rm`
+  stream is stereo) — DOCS-GAP.
+
+### Changed
+
+- `CookCookie::parse` no longer surfaces every `< 0x01000003` selector
+  as `Error::UnsupportedSelector`. The two documented MonoStereo
+  siblings (`0x01000001` / `0x01000002`) and the multichannel
+  `0x02000000` selector now produce their family-specific GAP errors;
+  `UnsupportedSelector` is reserved for values the backend factory
+  `cook.dll!0x1c60` would reject with `0x80040005`.
+
+### Earlier additions
+
 - `descramble` module: the per-buffer XOR descramble — the first
   byte-touching stage of the `RADecode` decode driver. `xor_descramble`
   / `xor_descramble_into` run the word-wise (32-bit, little-endian) XOR

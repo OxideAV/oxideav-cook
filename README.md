@@ -35,10 +35,24 @@ numeric facts tables + real-stream validation).
   disambiguates at open time.
 - **Extradata cookie parser** — [`CookCookie::parse`](src/cookie.rs)
   reads the big-endian per-stream extradata cookie for the extended
-  (`>= 0x01000003`) selector and cross-checks that it self-describes the
+  (`0x01000003`) selector and cross-checks that it self-describes the
   same configuration (channels, subband count, stereo mode, recovered
   samples-per-frame) as its named flavor record. Pinned against the real
   `FUN_RM_32.rm` stream (flavor 21) in `tests/cookie_realstream.rs`.
+- **Backend-family selector classification** —
+  [`SelectorFamily`](src/cookie.rs) classifies any 32-bit selector by the
+  backend family the proprietary decoder's factory `0x1c60` would
+  dispatch to (spec/01 §3.1): the three mono/stereo Cook selectors
+  (`0x01000001` / `0x01000002` / `0x01000003`) share `MonoStereo`,
+  `0x02000000` is `Multichannel`, and anything else lands as
+  `Unsupported`. `CookCookie::parse` now returns the family-specific
+  `Error::NonExtendedSelectorNotSupported` for the two MonoStereo
+  siblings (same backend, shorter cookie layout that spec/01 §3 does
+  not pin — DOCS-GAP) and `Error::MultichannelSelectorNotSupported`
+  for the `0x02000000` family (distinct backend, cookie layout
+  GAP-only), letting downstream callers triage GAP-typed selectors
+  separately from values the binary genuinely rejects with the
+  `0x80040005` path.
 - **DSP parameter tables** — [`crate::tables`](src/tables.rs) vendors
   the eight remaining extracted numeric tables (two 127-entry
   power-of-two ladders, per-category gain-step / gain-bias / level-count
@@ -103,9 +117,12 @@ numeric facts tables + real-stream validation).
 ## Not yet implemented
 
 The transform (MDCT), gain/quantiser, and entropy decode pipeline, the
-`oxideav_core` registration glue, and the multichannel (`0x02000000`)
-backend selector. The numeric tables the decode path will consume are
-all vendored and validated, and the open-time geometry that surrounds
-the transform is now derived deterministically; what remains is the
-algorithm itself. The public decode path still returns
-`Error::NotImplemented`.
+`oxideav_core` registration glue, and the cookie layouts of the
+non-extended `0x01000001` / `0x01000002` mono/stereo siblings and the
+multichannel (`0x02000000`) backend family — those are typed as
+DOCS-GAPs in `CookCookie::parse` so consumers can route their streams
+explicitly once spec/01 §3 pins the layouts. The numeric tables the
+decode path will consume are all vendored and validated, and the
+open-time geometry that surrounds the transform is now derived
+deterministically; what remains is the algorithm itself. The public
+decode path still returns `Error::NotImplemented`.
