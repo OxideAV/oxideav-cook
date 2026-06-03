@@ -113,10 +113,27 @@ numeric facts tables + real-stream validation).
   first-call 8 192-byte overlap-add warm-up + steady-state 20 480
   bytes/call cadence, summing to the pinned 2 936 832-byte total at
   call 144. Pinned end-to-end against all 144 real packets in
-  `tests/subpacket_realstream.rs`. The backend frame-decode + carry-
-  buffer state machine itself (stage 3 of the driver, `[backend_vtable
-  + 0x0c]`) is still typed as `Error::NotImplemented` — it needs the
-  backend bitstream reader, which lands in a later round.
+  `tests/subpacket_realstream.rs`.
+- **`RADecode` call-sequence session state** —
+  [`CallSession`](src/session.rs) is the third structural decode-pipeline
+  stage above the backend (`docs/audio/cook/spec/01-cook-decoder-
+  structure.md` §5 driver-state semantics + `docs/audio/cook/validation/
+  04-cook-stream-validation.md` §5 cadence). Built from a [`DecodeConfig`]
+  or a [`SubPacketLayout`], it holds the running `RADecode` call counter
+  and the running PCM cursor and exposes
+  [`next_call_expected_input_len`](src/session.rs) (= `frame_bytes`),
+  [`next_call_pcm_bytes`](src/session.rs) (warm-up on call 0, steady-state
+  thereafter), and [`next_call_pcm_byte_range`](src/session.rs) for
+  sizing the next call's input and output deterministically;
+  [`advance_one_call`](src/session.rs) validates both buffer lengths
+  against the validator-pinned per-call budget and increments the
+  cursor. Pinned end-to-end against the 144-call sequence of
+  `FUN_RM_32.rm` in `tests/session_realstream.rs`: walking the full
+  sequence produces the validator's pinned 2 936 832-byte total. The
+  backend frame-decode + carry-buffer state machine itself (the
+  `[backend_vtable + 0x0c]` body — bitstream reader, gain/quantiser,
+  MDCT, overlap-add) is still typed as `Error::NotImplemented` — it
+  lands in a later round.
 - **Per-buffer XOR descramble** — [`descramble`](src/descramble.rs) is
   the first byte-touching stage of the `RADecode` decode driver: a
   word-wise (32-bit, little-endian) XOR pass over the input, keyed by

@@ -8,6 +8,33 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `session` module: `CallSession::new(SubPacketLayout)` /
+  `CallSession::from_config(&DecodeConfig)` builds a stateful walker
+  over a `RADecode` call sequence (the third structural decode-pipeline
+  stage above the backend frame-decode). The session captures the
+  running call counter and PCM cursor and exposes
+  `calls_completed()`, `total_pcm_emitted()`,
+  `next_call_expected_input_len()` (= `frame_bytes`),
+  `next_call_pcm_bytes()` (validator-pinned: warm-up on call 0,
+  steady-state thereafter), `next_call_pcm_byte_range()` for sizing
+  the next call's output slice, and
+  `advance_one_call(input_len, output_len)` to account for a completed
+  call — validates both lengths against the validator-pinned per-call
+  budget and steps the cursor. Pinned by
+  `docs/audio/cook/spec/01-cook-decoder-structure.md` §5 (the per-call
+  `RADecode` driver) and `docs/audio/cook/validation/04-cook-stream-
+  validation.md` §5 (the 144-call cadence: 8 192-byte warm-up + 143 ×
+  20 480-byte steady-state = 2 936 832-byte total).
+- `Error::CallInputLengthMismatch { got, expected }` /
+  `Error::CallOutputLengthMismatch { got, expected }` for the new
+  session-level rejections.
+- `tests/session_realstream.rs`: walks the bundled `FUN_RM_32.rm` to
+  its 144 validated 465-byte payloads and runs `CallSession` over the
+  full sequence — confirms the running cursor matches
+  `DecodeConfig::total_pcm_bytes` at every step, reproduces the
+  validator's 2 936 832-byte total exactly after 144 calls, and that
+  mis-sized input/output buffers surface as typed mismatches without
+  advancing the session state.
 - `subpacket` module: `SubPacketLayout::from_config(&DecodeConfig)`
   derives the per-`RADecode` sub-packet split the driver `cook.dll!
   0x1260` enforces — `sub_packets_per_call` fixed-stride slots of

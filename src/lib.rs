@@ -63,6 +63,23 @@
 //! buffer state machine (stage 3, `[backend_vtable + 0x0c]`) is still
 //! [`Error::NotImplemented`].
 //!
+//! Round 9 wires the third structural decode-pipeline stage: the
+//! `RADecode` call-sequence session state in [`session`]. A
+//! [`CallSession`] holds a [`SubPacketLayout`] plus the running call
+//! counter / PCM cursor and exposes
+//! ([`CallSession::next_call_expected_input_len`],
+//! [`CallSession::next_call_pcm_bytes`],
+//! [`CallSession::next_call_pcm_byte_range`]) for sizing the next
+//! call's input/output, and [`CallSession::advance_one_call`] for
+//! accounting a completed call (validates both lengths against the
+//! validator-pinned per-call budget — warm-up on call 0, steady-state
+//! thereafter — and increments the cursor). Pinned end-to-end against
+//! the 144-call sequence of `FUN_RM_32.rm` in
+//! `tests/session_realstream.rs`: walking the full sequence produces
+//! the validator's pinned `2 936 832`-byte total. The backend
+//! frame-decode itself (the bitstream + transform pipeline behind
+//! `[backend_vtable + 0x0c]`) remains [`Error::NotImplemented`].
+//!
 //! The transform / entropy decode pipeline itself still lands in later
 //! rounds — [`Error::NotImplemented`] continues to gate the decode
 //! path.
@@ -73,6 +90,7 @@ pub mod cookie;
 pub mod descramble;
 pub mod flavor;
 pub mod init;
+pub mod session;
 pub mod subpacket;
 pub mod tables;
 
@@ -82,6 +100,7 @@ pub use flavor::{
     flavor_indices_matching_cookie, flavor_record, iter_flavor_records, FlavorRecord, FLAVOR_COUNT,
 };
 pub use init::{DecodeConfig, Descriptor, PCM_BYTES_PER_SAMPLE, RADECODE_FLAGS_DECODE};
+pub use session::CallSession;
 pub use subpacket::SubPacketLayout;
 
 /// Crate-local error type. Concrete variants land as the rebuild rounds
@@ -171,6 +190,23 @@ pub enum Error {
         /// The required per-call input length (= `frame_bytes`).
         expected: usize,
     },
+    /// A `RADecode` call's input length did not match the per-call
+    /// budget the [`session::CallSession`] tracks (= `frame_bytes`).
+    CallInputLengthMismatch {
+        /// The supplied input length.
+        got: usize,
+        /// The required per-call input length.
+        expected: usize,
+    },
+    /// A `RADecode` call's output buffer length did not match the
+    /// validator-pinned PCM budget the [`session::CallSession`] tracks
+    /// (warm-up on the first call, steady-state thereafter).
+    CallOutputLengthMismatch {
+        /// The supplied output buffer length.
+        got: usize,
+        /// The required per-call PCM budget for this call index.
+        expected: usize,
+    },
 }
 
 impl core::fmt::Display for Error {
@@ -229,6 +265,16 @@ impl core::fmt::Display for Error {
                 f,
                 "oxideav-cook: sub-packet input length {got} does not match the per-call \
                  frame_bytes {expected}"
+            ),
+            Error::CallInputLengthMismatch { got, expected } => write!(
+                f,
+                "oxideav-cook: RADecode call input length {got} does not match the per-call \
+                 frame_bytes {expected}"
+            ),
+            Error::CallOutputLengthMismatch { got, expected } => write!(
+                f,
+                "oxideav-cook: RADecode call output buffer length {got} does not match the \
+                 validator-pinned PCM budget {expected}"
             ),
         }
     }
