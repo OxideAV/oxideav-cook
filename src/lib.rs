@@ -80,6 +80,20 @@
 //! frame-decode itself (the bitstream + transform pipeline behind
 //! `[backend_vtable + 0x0c]`) remains [`Error::NotImplemented`].
 //!
+//! Round 10 wires the per-call orchestrator: [`Driver`] bundles a
+//! [`DecodeConfig`], a [`CommonMode`] toggle, and an embedded
+//! [`CallSession`] into the `RADecode`-equivalent entry point spec/01
+//! §5 describes. [`Driver::prepare_call`] runs stages 1+2
+//! (descramble + sub-packet split), returns a [`PreparedCall`] that
+//! exposes the descrambled bytes and the sub-packet iterator, and
+//! does *not* advance the cursor; [`Driver::advance_after_decode`]
+//! accounts for the completed call once the consumer's backend has
+//! filled the per-call PCM budget. [`Driver::decode_call`] is the
+//! full-pipeline analog: it validates sizes, runs stages 1+2, and
+//! surfaces the backend frame-decode as [`Error::NotImplemented`] —
+//! reserving that signal exclusively for the transform GAP so length
+//! errors stay distinct.
+//!
 //! The transform / entropy decode pipeline itself still lands in later
 //! rounds — [`Error::NotImplemented`] continues to gate the decode
 //! path.
@@ -88,6 +102,7 @@
 
 pub mod cookie;
 pub mod descramble;
+pub mod driver;
 pub mod flavor;
 pub mod init;
 pub mod session;
@@ -96,6 +111,7 @@ pub mod tables;
 
 pub use cookie::{CookCookie, SelectorFamily, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
 pub use descramble::{descramble_packet, xor_descramble, xor_descramble_into, xor_key, CommonMode};
+pub use driver::{Driver, PreparedCall};
 pub use flavor::{
     flavor_indices_matching_cookie, flavor_record, iter_flavor_records, FlavorRecord, FLAVOR_COUNT,
 };

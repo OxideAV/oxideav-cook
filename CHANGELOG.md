@@ -8,6 +8,57 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `driver` module: `Driver` is the `RADecode`-equivalent per-call
+  orchestrator — bundles a `DecodeConfig`, a `CommonMode` toggle, and
+  an embedded `CallSession` into the single entry point spec/01 §5
+  describes for the per-call decode driver `cook.dll!0x1260`. API:
+  `Driver::new(DecodeConfig)`, `Driver::with_common_mode(CommonMode)`
+  (builder), `Driver::set_common_mode(CommonMode)`,
+  `Driver::common_mode()`, `Driver::config()`, `Driver::layout()`,
+  `Driver::calls_completed()`, `Driver::total_pcm_emitted()`,
+  `Driver::next_call_expected_input_len()`,
+  `Driver::next_call_pcm_bytes()`,
+  `Driver::next_call_pcm_byte_range()`, plus the two orchestration
+  methods below. Pinned by `docs/audio/cook/spec/01-cook-decoder-
+  structure.md` §5 (the body of the per-call decode driver) and
+  `docs/audio/cook/validation/04-cook-stream-validation.md` §4.3 / §5
+  (the validated per-call cadence).
+- `Driver::prepare_call(packet, xor_key) -> Result<PreparedCall, Error>`:
+  validates the input length, runs the per-buffer XOR descramble when
+  `common_mode` is on (the constructor default is off, matching the
+  validated real-stream path), and returns a `PreparedCall` exposing
+  the descrambled bytes and the sub-packet iterator. Does **not**
+  advance the session cursor — call `Driver::advance_after_decode`
+  once the consumer's backend has filled the per-call PCM budget.
+- `Driver::advance_after_decode(output_len) -> Result<(), Error>`:
+  accounts for one completed `RADecode` call without invoking the
+  backend. Validates `output_len` against the validator-pinned per-call
+  budget (warm-up on call 0, steady-state thereafter) and advances the
+  session cursor on success.
+- `Driver::decode_call(packet, output, xor_key) -> Result<(), Error>`:
+  the full-pipeline analog. Validates input + output sizes against
+  the wired per-call budget, runs stages 1+2 (descramble + sub-packet
+  split), and surfaces the backend frame-decode (`[backend_vtable +
+  0x0c]`) as `Error::NotImplemented` — reserving that signal
+  exclusively for the transform GAP so length mismatches stay
+  distinct. On the GAP signal the cursor does NOT advance (no partial
+  state).
+- `PreparedCall<'a>`: descrambled, length-checked view of one call's
+  input. API: `descrambled()`, `sub_packets_per_call()`,
+  `sub_packet_size()`, `iter_sub_packets()`, `layout()`. Bytes are a
+  zero-copy `Cow::Borrowed` on the off-path and a `Cow::Owned` on the
+  on-path (matching `crate::descramble`).
+- `tests/driver_realstream.rs`: walks the bundled `FUN_RM_32.rm` to
+  its 144 validator-pinned 465-byte audio payloads and drives them
+  through the `Driver`. Confirms `prepare_call` accepts every packet
+  verbatim on the default off-path and partitions each into 5 × 93-byte
+  sub-packet slots; that walking the 144 calls with `advance_after_decode`
+  using the validator-pinned per-call budgets reproduces the
+  `2 936 832`-byte total exactly; that `decode_call` on a real packet
+  with correctly-sized buffers surfaces the backend GAP as
+  `Error::NotImplemented` without advancing the cursor; that a
+  wrong-sized input rejects with `CallInputLengthMismatch` (never the
+  GAP signal); and that the on-path is self-inverse on a real packet.
 - `session` module: `CallSession::new(SubPacketLayout)` /
   `CallSession::from_config(&DecodeConfig)` builds a stateful walker
   over a `RADecode` call sequence (the third structural decode-pipeline

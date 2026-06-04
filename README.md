@@ -134,6 +134,29 @@ numeric facts tables + real-stream validation).
   `[backend_vtable + 0x0c]` body — bitstream reader, gain/quantiser,
   MDCT, overlap-add) is still typed as `Error::NotImplemented` — it
   lands in a later round.
+- **Per-call `Driver` orchestrator** — [`Driver`](src/driver.rs) bundles
+  a [`DecodeConfig`], a [`CommonMode`] toggle, and an embedded
+  [`CallSession`] into the `RADecode`-equivalent per-call entry point
+  spec/01 §5 describes for the decode driver `cook.dll!0x1260`.
+  [`Driver::prepare_call`](src/driver.rs) validates the input length,
+  runs the per-buffer XOR descramble when common mode is on (the
+  constructor default is off — matching the validated real-stream
+  path), and returns a [`PreparedCall`](src/driver.rs) exposing the
+  descrambled bytes and the sub-packet iterator;
+  [`Driver::advance_after_decode`](src/driver.rs) accounts for one
+  completed call against the validator-pinned per-call PCM budget
+  (warm-up on call 0, steady-state thereafter). The full-pipeline
+  [`Driver::decode_call`](src/driver.rs) validates buffer sizes,
+  orchestrates stages 1+2, and surfaces the backend frame-decode
+  (`[backend_vtable + 0x0c]`) as `Error::NotImplemented` — reserving
+  that signal exclusively for the transform GAP so length errors stay
+  distinct. Pinned end-to-end against all 144 real packets of
+  `FUN_RM_32.rm` in `tests/driver_realstream.rs`: every packet passes
+  `prepare_call` verbatim on the default off-path with the 5 × 93
+  sub-packet split, walking the 144-call cadence with
+  `advance_after_decode` reproduces the validator's `2 936 832`-byte
+  total, and `decode_call` on a wired-correct packet/output pair
+  signals the backend GAP without advancing the cursor.
 - **Per-buffer XOR descramble** — [`descramble`](src/descramble.rs) is
   the first byte-touching stage of the `RADecode` decode driver: a
   word-wise (32-bit, little-endian) XOR pass over the input, keyed by
@@ -154,13 +177,20 @@ numeric facts tables + real-stream validation).
 
 ## Not yet implemented
 
-The transform (MDCT), gain/quantiser, and entropy decode pipeline, the
-`oxideav_core` registration glue, and the cookie layouts of the
-non-extended `0x01000001` / `0x01000002` mono/stereo siblings and the
-multichannel (`0x02000000`) backend family — those are typed as
-DOCS-GAPs in `CookCookie::parse` so consumers can route their streams
-explicitly once spec/01 §3 pins the layouts. The numeric tables the
-decode path will consume are all vendored and validated, and the
-open-time geometry that surrounds the transform is now derived
-deterministically; what remains is the algorithm itself. The public
-decode path still returns `Error::NotImplemented`.
+The backend frame-decode itself — the bitstream reader, gain/quantiser,
+inverse MDCT, optional LPC/temporal prediction, post-filter, and joint-
+stereo coupling sitting behind the `[backend_vtable + 0x0c]` slot —
+remains a `crate::Error::NotImplemented` GAP. The full-pipeline
+`Driver::decode_call` validates buffer sizes and runs stages 1+2, then
+surfaces that GAP signal explicitly so consumers can already wire the
+crate into a real container demuxer and treat the backend signal as the
+single documented gating value while the transform pipeline lands in
+later rounds. The `oxideav_core` registration glue and the cookie
+layouts of the non-extended `0x01000001` / `0x01000002` mono/stereo
+siblings and the multichannel (`0x02000000`) backend family are also
+DOCS-GAPs — typed in `CookCookie::parse` so callers can triage
+GAP-typed selectors separately from values the binary genuinely
+rejects. The numeric tables the decode path will consume are all
+vendored and validated, and the per-call orchestration that surrounds
+the transform is now wired deterministically through `Driver` — what
+remains is the algorithm itself.
