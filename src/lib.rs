@@ -94,12 +94,25 @@
 //! reserving that signal exclusively for the transform GAP so length
 //! errors stay distinct.
 //!
+//! Round 11 (this round) wires the per-category gain/quantiser
+//! parameter bundle: the [`category`] module gives a typed
+//! [`CategoryIndex`] newtype enforcing the `0..=6` range the per-band
+//! quantiser worker `cook.dll!0x69f0` guards, plus a
+//! [`CategoryParameters`] struct that bundles the three parallel
+//! `[cat*4 + base]` lookups (`gain_step` / `gain_bias` / `level_count`)
+//! into a single audit-anchored accessor. The structural lookup is the
+//! piece; the per-band quantiser algorithm itself remains a DOCS-GAP
+//! (only the audit's single `(bias + |sample| * step)` sentence
+//! describes its arithmetic — too narrow to wire without a band-loop
+//! pin).
+//!
 //! The transform / entropy decode pipeline itself still lands in later
 //! rounds — [`Error::NotImplemented`] continues to gate the decode
 //! path.
 
 #![forbid(unsafe_code)]
 
+pub mod category;
 pub mod cookie;
 pub mod descramble;
 pub mod driver;
@@ -109,6 +122,9 @@ pub mod session;
 pub mod subpacket;
 pub mod tables;
 
+pub use category::{
+    category_parameters, CategoryIndex, CategoryParameters, CATEGORY_COUNT, MAX_CATEGORY_INDEX,
+};
 pub use cookie::{CookCookie, SelectorFamily, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
 pub use descramble::{descramble_packet, xor_descramble, xor_descramble_into, xor_key, CommonMode};
 pub use driver::{Driver, PreparedCall};
@@ -223,6 +239,15 @@ pub enum Error {
         /// The required per-call PCM budget for this call index.
         expected: usize,
     },
+    /// A gain/quantiser category index was outside the
+    /// `0..=[crate::MAX_CATEGORY_INDEX]` range the per-band quantiser
+    /// worker `cook.dll!0x69f0` validates (audit note: *"category index
+    /// 7 is guarded out by the worker"* —
+    /// `docs/audio/cook/tables/category-level-count.meta`).
+    CategoryOutOfRange {
+        /// The supplied category index.
+        got: u8,
+    },
 }
 
 impl core::fmt::Display for Error {
@@ -291,6 +316,12 @@ impl core::fmt::Display for Error {
                 f,
                 "oxideav-cook: RADecode call output buffer length {got} does not match the \
                  validator-pinned PCM budget {expected}"
+            ),
+            Error::CategoryOutOfRange { got } => write!(
+                f,
+                "oxideav-cook: gain/quantiser category index {got} is out of range \
+                 (max is {})",
+                MAX_CATEGORY_INDEX
             ),
         }
     }

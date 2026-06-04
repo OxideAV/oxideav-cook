@@ -157,6 +157,22 @@ numeric facts tables + real-stream validation).
   `advance_after_decode` reproduces the validator's `2 936 832`-byte
   total, and `decode_call` on a wired-correct packet/output pair
   signals the backend GAP without advancing the cursor.
+- **Per-category gain/quantiser parameter bundle** —
+  [`category`](src/category.rs) wires the typed accessor for the three
+  parallel `[cat*4 + base]` arrays the per-band quantiser worker
+  `cook.dll!0x69f0` reads (audit points #18 / #19 in
+  `docs/audio/cook/provenance/03-cook-audit.md`).
+  [`CategoryIndex::new`](src/category.rs) enforces the `0..=6` range
+  the worker validates (the `.meta` note *"category index 7 is guarded
+  out by the worker"* is now a typed `Error::CategoryOutOfRange`
+  rejection), and [`CategoryParameters::for_index`](src/category.rs)
+  returns the matching `gain_step` (`0x8f58`, `2^(n/2)` centred on 1.0)
+  + `gain_bias` (`0x8f74`, monotone-increasing `-0.20..0.0`) +
+  `level_count` (`0x8f90`, strictly-decreasing `{13, 9, 6, 4, 3, 2, 1}`)
+  triple in a single call. The per-band quantiser algorithm itself
+  (the meta's *"forms (bias + |sample| * step) per band"* sentence +
+  the band-loop driving it) remains a DOCS-GAP — this module models
+  the structural parallel-table lookup only.
 - **Per-buffer XOR descramble** — [`descramble`](src/descramble.rs) is
   the first byte-touching stage of the `RADecode` decode driver: a
   word-wise (32-bit, little-endian) XOR pass over the input, keyed by

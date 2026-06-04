@@ -8,6 +8,27 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `category` module: typed gain/quantiser category index newtype +
+  per-category parameter bundle for the per-band quantiser worker
+  `cook.dll!0x69f0`. API: `CATEGORY_COUNT = 7`,
+  `MAX_CATEGORY_INDEX = 6`, `CategoryIndex::new(u8) -> Result<_, Error>`,
+  `CategoryIndex::new_const(u8) -> CategoryIndex` (panicking,
+  const-context),  `CategoryIndex::{get, as_usize}`,
+  `CategoryParameters { gain_step, gain_bias, level_count }`,
+  `CategoryParameters::for_index(CategoryIndex)`, and the
+  `category_parameters(CategoryIndex)` free accessor. Wires the parallel
+  `[cat*4 + base]` access pattern audit points #18 / #19 in
+  `docs/audio/cook/provenance/03-cook-audit.md` pin (gain-step
+  `0x8f58`, gain-bias `0x8f74`, level-count `0x8f90`), with the
+  `0..=6` range enforced by typed construction — the
+  `category-level-count.meta` note *"category index 7 is guarded out
+  by the worker"* is now a typed `Error::CategoryOutOfRange` rejection
+  rather than a runtime panic. The per-band quantiser arithmetic
+  itself (the meta's *"(bias + |sample| * step)"* sentence and the
+  band-loop driving it) remains a DOCS-GAP; this module wires only
+  the structural lookup.
+- `Error::CategoryOutOfRange { got: u8 }` variant for category-index
+  rejections.
 - `driver` module: `Driver` is the `RADecode`-equivalent per-call
   orchestrator — bundles a `DecodeConfig`, a `CommonMode` toggle, and
   an embedded `CallSession` into the single entry point spec/01 §5
