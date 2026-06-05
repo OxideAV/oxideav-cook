@@ -111,6 +111,14 @@ impl DecodeConfig {
     ///
     /// # Errors
     ///
+    /// - [`Error::CookieInvalidChannels`] /
+    ///   [`Error::CookieZeroSubbandCount`] /
+    ///   [`Error::CookieZeroSamplesProduct`] if the cookie is
+    ///   structurally malformed (see
+    ///   [`CookCookie::validate_geometry`]). A cookie obtained from
+    ///   [`CookCookie::parse`] is already validated; the explicit
+    ///   re-check here catches literal-constructed cookies that bypass
+    ///   the parser.
     /// - [`Error::ZeroDivisorChannels`] if the descriptor's
     ///   `channels_divisor` is `0` (would divide-by-zero in
     ///   `backend init 0x20c0`).
@@ -130,6 +138,12 @@ impl DecodeConfig {
         flavor: &FlavorRecord,
         frame_bytes: u32,
     ) -> Result<Self, Error> {
+        // Structural well-formedness of the cookie body (channels
+        // in {1, 2}, non-zero subband count, non-zero spf×ch product).
+        // A parser-built cookie has already passed this; the re-check
+        // closes the gap for callers building a `CookCookie` literal
+        // (e.g. test fixtures or cached wire snapshots).
+        cookie.validate_geometry()?;
         if descriptor.channels_divisor == 0 {
             return Err(Error::ZeroDivisorChannels);
         }
@@ -364,5 +378,82 @@ mod tests {
         assert_eq!(RADECODE_FLAGS_DECODE, 1);
         // Backend's gate sees the inverted bit 0.
         assert_eq!((!RADECODE_FLAGS_DECODE) & 1, 0);
+    }
+
+    // --- structural cookie-geometry guards (spec/02 §1) ---
+
+    #[test]
+    fn literal_cookie_with_invalid_channels_rejected_before_divisor_checks() {
+        // A consumer constructing a `CookCookie` literal directly
+        // (bypassing `parse`) gets the same structural rejection.
+        // Pick a cookie with channels=3: validate_geometry catches it
+        // before the cookie/flavor cross-check would have surfaced
+        // CookieFlavorMismatch.
+        let bad = crate::cookie::CookCookie {
+            selector: crate::cookie::SELECTOR_EXTENDED,
+            samples_per_frame_x_channels: 2048,
+            subband_count: 32,
+            reserved: 0,
+            channels: 3,
+            stereo_mode: 4,
+        };
+        let err =
+            DecodeConfig::from_inputs(&bad, &REAL_DESCRIPTOR, &real_flavor(), REAL_FRAME_BYTES)
+                .unwrap_err();
+        assert_eq!(err, Error::CookieInvalidChannels { got: 3 });
+    }
+
+    #[test]
+    fn literal_cookie_with_zero_subband_count_rejected_before_divisor_checks() {
+        let bad = crate::cookie::CookCookie {
+            selector: crate::cookie::SELECTOR_EXTENDED,
+            samples_per_frame_x_channels: 2048,
+            subband_count: 0,
+            reserved: 0,
+            channels: 2,
+            stereo_mode: 4,
+        };
+        let err =
+            DecodeConfig::from_inputs(&bad, &REAL_DESCRIPTOR, &real_flavor(), REAL_FRAME_BYTES)
+                .unwrap_err();
+        assert_eq!(err, Error::CookieZeroSubbandCount);
+    }
+
+    #[test]
+    fn literal_cookie_with_zero_samples_product_rejected_before_divisor_checks() {
+        let bad = crate::cookie::CookCookie {
+            selector: crate::cookie::SELECTOR_EXTENDED,
+            samples_per_frame_x_channels: 0,
+            subband_count: 32,
+            reserved: 0,
+            channels: 2,
+            stereo_mode: 4,
+        };
+        let err =
+            DecodeConfig::from_inputs(&bad, &REAL_DESCRIPTOR, &real_flavor(), REAL_FRAME_BYTES)
+                .unwrap_err();
+        assert_eq!(err, Error::CookieZeroSamplesProduct);
+    }
+
+    #[test]
+    fn cookie_validation_runs_before_descriptor_divisor_checks() {
+        // A bad cookie + a zero descriptor divisor: the cookie check
+        // surfaces first (cookie validation runs at the top of
+        // `from_inputs`).
+        let bad = crate::cookie::CookCookie {
+            selector: crate::cookie::SELECTOR_EXTENDED,
+            samples_per_frame_x_channels: 2048,
+            subband_count: 32,
+            reserved: 0,
+            channels: 5,
+            stereo_mode: 4,
+        };
+        let bad_desc = Descriptor {
+            channels_divisor: 0,
+            sub_packet_size: 0,
+        };
+        let err = DecodeConfig::from_inputs(&bad, &bad_desc, &real_flavor(), REAL_FRAME_BYTES)
+            .unwrap_err();
+        assert_eq!(err, Error::CookieInvalidChannels { got: 5 });
     }
 }

@@ -8,6 +8,25 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `CookCookie::validate_geometry() -> Result<(), Error>`: structural
+  well-formedness guard for the cookie body, anchored to the three
+  field-level invariants `docs/audio/cook/spec/02-cook-flavor-and-
+  extradata-layout.md` §1 pins on every well-formed flavor record
+  (table at lines 26–36 and the "channels in {1, 2}" sentence at line
+  50): `channels ∈ {1, 2}`, `subband_count >= 1`, and
+  `samples_per_frame_x_channels >= 1`. Three new typed errors surface
+  the failures: `Error::CookieInvalidChannels { got: u16 }` for a
+  channels field outside `{1, 2}`, `Error::CookieZeroSubbandCount` for
+  a zero subband count, and `Error::CookieZeroSamplesProduct` for a
+  zero `samples_per_frame × channels` product. `CookCookie::parse` now
+  runs the guard automatically, so every parser-built cookie is
+  structurally well-formed by construction;
+  `DecodeConfig::from_inputs` re-runs the same guard at the head of
+  its wiring so literal-built cookies (test fixtures, cached wire
+  snapshots) get the same structural rejection before the existing
+  divisor / flavor checks. Lets callers distinguish a malformed
+  cookie body from a cookie that simply names the wrong flavor record
+  (still `Error::CookieFlavorMismatch`).
 - `category` module: typed gain/quantiser category index newtype +
   per-category parameter bundle for the per-band quantiser worker
   `cook.dll!0x69f0`. API: `CATEGORY_COUNT = 7`,

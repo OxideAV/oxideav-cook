@@ -39,6 +39,18 @@ numeric facts tables + real-stream validation).
   same configuration (channels, subband count, stereo mode, recovered
   samples-per-frame) as its named flavor record. Pinned against the real
   `FUN_RM_32.rm` stream (flavor 21) in `tests/cookie_realstream.rs`.
+  [`CookCookie::validate_geometry`](src/cookie.rs) enforces the three
+  field-level invariants spec/02 §1 pins on every well-formed flavor
+  record (`channels ∈ {1, 2}`, `subband_count >= 1`,
+  `samples_per_frame × channels >= 1`); `parse` runs it automatically
+  so every returned cookie is structurally well-formed by
+  construction, and `DecodeConfig::from_inputs` re-runs the guard at
+  the head of its wiring so literal-built cookies (test fixtures,
+  cached wire snapshots) get the same structural rejection. Surfaced
+  as `Error::CookieInvalidChannels` / `Error::CookieZeroSubbandCount`
+  / `Error::CookieZeroSamplesProduct` so callers can distinguish a
+  malformed cookie body from a cookie that simply names the wrong
+  flavor record.
 - **Backend-family selector classification** —
   [`SelectorFamily`](src/cookie.rs) classifies any 32-bit selector by the
   backend family the proprietary decoder's factory `0x1c60` would

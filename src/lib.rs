@@ -94,17 +94,34 @@
 //! reserving that signal exclusively for the transform GAP so length
 //! errors stay distinct.
 //!
-//! Round 11 (this round) wires the per-category gain/quantiser
-//! parameter bundle: the [`category`] module gives a typed
-//! [`CategoryIndex`] newtype enforcing the `0..=6` range the per-band
-//! quantiser worker `cook.dll!0x69f0` guards, plus a
-//! [`CategoryParameters`] struct that bundles the three parallel
-//! `[cat*4 + base]` lookups (`gain_step` / `gain_bias` / `level_count`)
-//! into a single audit-anchored accessor. The structural lookup is the
-//! piece; the per-band quantiser algorithm itself remains a DOCS-GAP
-//! (only the audit's single `(bias + |sample| * step)` sentence
-//! describes its arithmetic — too narrow to wire without a band-loop
-//! pin).
+//! Round 11 wires the per-category gain/quantiser parameter bundle:
+//! the [`category`] module gives a typed [`CategoryIndex`] newtype
+//! enforcing the `0..=6` range the per-band quantiser worker
+//! `cook.dll!0x69f0` guards, plus a [`CategoryParameters`] struct that
+//! bundles the three parallel `[cat*4 + base]` lookups (`gain_step` /
+//! `gain_bias` / `level_count`) into a single audit-anchored accessor.
+//! The structural lookup is the piece; the per-band quantiser
+//! algorithm itself remains a DOCS-GAP (only the audit's single
+//! `(bias + |sample| * step)` sentence describes its arithmetic — too
+//! narrow to wire without a band-loop pin).
+//!
+//! Round 12 (this round) adds the structural cookie-geometry guard:
+//! [`CookCookie::validate_geometry`] checks the three independent
+//! field-level invariants spec/02 §1 pins on every well-formed flavor
+//! record — `channels ∈ {1, 2}` (line 33 / line 50), `subband_count >=
+//! 1` (line 34: present on every record, sentinel record 30 hits the
+//! minimum at exactly `1`), and `samples_per_frame_x_channels >= 1`
+//! (the `[4..5]` product is at least `256` on any well-formed
+//! record). [`CookCookie::parse`] runs the guard automatically so every
+//! parser-built cookie is structurally well-formed by construction;
+//! [`crate::DecodeConfig::from_inputs`] re-runs the same guard at the
+//! head of its input wiring so literal-built cookies (test fixtures,
+//! cached wire snapshots) get the same structural rejection before the
+//! divisor / flavor checks run. Surfaced as the three typed errors
+//! [`Error::CookieInvalidChannels`] / [`Error::CookieZeroSubbandCount`]
+//! / [`Error::CookieZeroSamplesProduct`] so consumers can distinguish a
+//! structurally-malformed cookie from a cookie that simply names the
+//! wrong flavor record ([`Error::CookieFlavorMismatch`]).
 //!
 //! The transform / entropy decode pipeline itself still lands in later
 //! rounds — [`Error::NotImplemented`] continues to gate the decode
@@ -248,6 +265,45 @@ pub enum Error {
         /// The supplied category index.
         got: u8,
     },
+    /// Cookie `[0xc..0xd]` channels field declared a value outside the
+    /// `{1, 2}` set spec/02 §1 pins for every well-formed flavor record
+    /// (line 33: *"channels: **1** or **2**"*; line 50: *"channels in
+    /// {1, 2}"*).
+    ///
+    /// A value of `0` would also trip a divide-by-zero in
+    /// [`crate::CookCookie::samples_per_frame`] (the recovered
+    /// samples-per-frame uses `channels` as the divisor); a value of
+    /// `>= 3` cannot correspond to any of the 31 well-formed flavor
+    /// records and would in any case mis-size every downstream PCM
+    /// budget (PCM-bytes-per-call scales linearly with channels).
+    /// Surfaced as its own typed variant so callers can distinguish a
+    /// structurally-malformed cookie from a cookie that simply names
+    /// the wrong flavor record (which stays
+    /// [`Error::CookieFlavorMismatch`]).
+    CookieInvalidChannels {
+        /// The malformed channel count read from cookie `[0xc..0xd]`.
+        got: u16,
+    },
+    /// Cookie `[6..7]` subband count was `0`.
+    ///
+    /// Spec/02 §1 line 34 documents `subband count` as *"number of
+    /// coded subbands (grows with sample rate and bitrate; e.g. 12 at
+    /// 8 kHz, 47 at 44.1 kHz)"*; every one of the 31 well-formed
+    /// flavor records has `subband_count >= 1` (the sentinel record 30
+    /// has the minimum value `1`). A `0` would make the per-band
+    /// quantiser loop trivially empty and cannot correspond to any
+    /// well-formed flavor record, so the cookie is rejected
+    /// structurally rather than allowed to silently mis-match.
+    CookieZeroSubbandCount,
+    /// Cookie `[4..5]` `samples_per_frame × channels` product was `0`.
+    ///
+    /// The backend init `0x20c0` divides this value by descriptor
+    /// `+0x06` (`channels_divisor`) to recover `samples_per_frame`; a
+    /// `0` product cannot correspond to any well-formed flavor record
+    /// (all 31 records have `samples_per_frame ∈ {256, 512, 1024}` and
+    /// `channels ∈ {1, 2}`, so the product is at least `256`). Rejected
+    /// as a structurally-malformed cookie.
+    CookieZeroSamplesProduct,
 }
 
 impl core::fmt::Display for Error {
@@ -322,6 +378,19 @@ impl core::fmt::Display for Error {
                 "oxideav-cook: gain/quantiser category index {got} is out of range \
                  (max is {})",
                 MAX_CATEGORY_INDEX
+            ),
+            Error::CookieInvalidChannels { got } => write!(
+                f,
+                "oxideav-cook: cookie channels field {got} is outside the well-formed \
+                 {{1, 2}} set (spec/02 §1)"
+            ),
+            Error::CookieZeroSubbandCount => f.write_str(
+                "oxideav-cook: cookie subband count is 0 (no well-formed flavor record \
+                 has subband_count == 0; spec/02 §1)",
+            ),
+            Error::CookieZeroSamplesProduct => f.write_str(
+                "oxideav-cook: cookie [4..5] samples_per_frame × channels product is 0 \
+                 (no well-formed flavor record has samples_per_frame == 0; spec/02 §1)",
             ),
         }
     }

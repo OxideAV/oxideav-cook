@@ -153,6 +153,14 @@ pub struct CookCookie {
 impl CookCookie {
     /// Parse an extended-selector cookie from `blob`.
     ///
+    /// On success the returned [`CookCookie`] is **structurally
+    /// well-formed**: every field passes [`CookCookie::validate_geometry`]
+    /// (channels in `{1, 2}`, non-zero subband count, non-zero
+    /// samples-per-frame product). Malformed cookies surface as one of
+    /// the three typed `CookieInvalidChannels` /
+    /// `CookieZeroSubbandCount` / `CookieZeroSamplesProduct` errors so
+    /// callers do not have to re-validate the construction.
+    ///
     /// # Errors
     /// - [`Error::CookieTooShort`] if `blob` is shorter than
     ///   [`EXTENDED_COOKIE_LEN`].
@@ -165,6 +173,11 @@ impl CookCookie {
     ///   family (spec/01 §3.1); cookie layout not pinned (DOCS-GAP).
     /// - [`Error::UnsupportedSelector`] for any other selector value
     ///   (the `0x80040005` rejection path of `cook.dll!0x1c60`).
+    /// - [`Error::CookieInvalidChannels`] /
+    ///   [`Error::CookieZeroSubbandCount`] /
+    ///   [`Error::CookieZeroSamplesProduct`] for a structurally-
+    ///   malformed extended cookie body. See
+    ///   [`CookCookie::validate_geometry`] for the exact constraints.
     pub fn parse(blob: &[u8]) -> Result<Self, Error> {
         if blob.len() < EXTENDED_COOKIE_LEN {
             return Err(Error::CookieTooShort { got: blob.len() });
@@ -180,14 +193,16 @@ impl CookCookie {
         // with their own typed errors rather than silently constructing
         // a stereo cookie out of bytes the binary would not read here.
         if selector == SELECTOR_EXTENDED {
-            Ok(CookCookie {
+            let candidate = CookCookie {
                 selector,
                 samples_per_frame_x_channels: be16(4),
                 subband_count: be16(6),
                 reserved: be32(8),
                 channels: be16(12),
                 stereo_mode: be16(14),
-            })
+            };
+            candidate.validate_geometry()?;
+            Ok(candidate)
         } else {
             match SelectorFamily::classify(selector) {
                 SelectorFamily::MonoStereo => {
@@ -203,6 +218,68 @@ impl CookCookie {
                 }
             }
         }
+    }
+
+    /// Validate the cookie's geometry-bearing fields against the
+    /// constraints spec/02 §1 pins on every well-formed flavor record.
+    ///
+    /// This is a structural well-formedness check, **independent** of
+    /// any specific flavor record: it catches cookies whose declared
+    /// geometry cannot match any of the 31 well-formed records before
+    /// the consumer reaches the flavor cross-check
+    /// ([`CookCookie::matches_flavor`]) or the
+    /// [`crate::DecodeConfig::from_inputs`] divisor checks. Run
+    /// automatically by [`CookCookie::parse`]; callers constructing a
+    /// [`CookCookie`] directly (from a cached wire snapshot, or for
+    /// testing) can run it explicitly.
+    ///
+    /// Constraints checked (`docs/audio/cook/spec/02-cook-flavor-and-
+    /// extradata-layout.md` §1 — table at lines 26–36 and the
+    /// "channels in {1, 2}" sentence at line 50):
+    ///
+    /// - `channels ∈ {1, 2}` — every well-formed flavor record has
+    ///   channels in `{1, 2}`; a `0` would divide-by-zero in
+    ///   [`CookCookie::samples_per_frame`] and a `>= 3` cannot
+    ///   correspond to any record.
+    /// - `subband_count >= 1` — every well-formed flavor record has a
+    ///   subband count of at least `1` (the sentinel record 30 hits the
+    ///   minimum at exactly `1`).
+    /// - `samples_per_frame_x_channels >= 1` — the cookie `[4..5]`
+    ///   product is `samples_per_frame × channels`. Every well-formed
+    ///   flavor record has `samples_per_frame ∈ {256, 512, 1024}` and
+    ///   `channels ∈ {1, 2}`, so the product is at least `256`. A
+    ///   declared `0` cannot correspond to any record.
+    ///
+    /// `stereo_mode` and the reserved `[8..11]` field are deliberately
+    /// not constrained here — spec/02 §1 documents `stereo_mode` as
+    /// `0` for mono and `2..=5` for stereo / surround families (a
+    /// non-empty open range, but checking the exact set requires
+    /// knowing the cookie's channels first, which is the flavor
+    /// cross-check's job), and the reserved field's semantics are a
+    /// recorded DOCS-GAP (`validation/04` §4 notes "observed value 0
+    /// in the validated real stream" only).
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::CookieInvalidChannels`] if `channels` is `0` or
+    ///   `>= 3`.
+    /// - [`Error::CookieZeroSubbandCount`] if `subband_count == 0`.
+    /// - [`Error::CookieZeroSamplesProduct`] if
+    ///   `samples_per_frame_x_channels == 0`.
+    pub fn validate_geometry(&self) -> Result<(), Error> {
+        // Order: cheapest u16-zero checks first, then the bounded
+        // channels enumeration. All three are independent — a cookie
+        // failing more than one will surface the first failure.
+        if self.samples_per_frame_x_channels == 0 {
+            return Err(Error::CookieZeroSamplesProduct);
+        }
+        if self.subband_count == 0 {
+            return Err(Error::CookieZeroSubbandCount);
+        }
+        if self.channels != 1 && self.channels != 2 {
+            return Err(Error::CookieInvalidChannels { got: self.channels });
+        }
+        Ok(())
     }
 
     /// Classify this cookie's selector by backend family
@@ -387,5 +464,161 @@ mod tests {
             stereo_mode: 4,
         };
         assert_eq!(c.samples_per_frame(), None);
+    }
+
+    // --- validate_geometry coverage (spec/02 §1) ---
+
+    /// Build a structurally well-formed cookie literal mirroring
+    /// `REAL_COOKIE`, used as the well-formed baseline for the
+    /// negative `validate_geometry` cases.
+    fn well_formed() -> CookCookie {
+        CookCookie {
+            selector: SELECTOR_EXTENDED,
+            samples_per_frame_x_channels: 2048,
+            subband_count: 32,
+            reserved: 0,
+            channels: 2,
+            stereo_mode: 4,
+        }
+    }
+
+    #[test]
+    fn validate_geometry_accepts_well_formed_cookies() {
+        // The validated real stream is the canonical well-formed case.
+        let c = CookCookie::parse(&REAL_COOKIE).unwrap();
+        assert!(c.validate_geometry().is_ok());
+        // A literal mono variant (channels = 1) is equally well-formed
+        // structurally.
+        let mono = CookCookie {
+            channels: 1,
+            samples_per_frame_x_channels: 1024,
+            ..well_formed()
+        };
+        assert!(mono.validate_geometry().is_ok());
+    }
+
+    #[test]
+    fn validate_geometry_rejects_zero_channels() {
+        let bad = CookCookie {
+            channels: 0,
+            ..well_formed()
+        };
+        assert_eq!(
+            bad.validate_geometry(),
+            Err(Error::CookieInvalidChannels { got: 0 })
+        );
+    }
+
+    #[test]
+    fn validate_geometry_rejects_channels_above_two() {
+        for ch in [3u16, 4, 5, 6, 255, 65_535] {
+            let bad = CookCookie {
+                channels: ch,
+                ..well_formed()
+            };
+            assert_eq!(
+                bad.validate_geometry(),
+                Err(Error::CookieInvalidChannels { got: ch }),
+                "channels = {ch}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_geometry_rejects_zero_subband_count() {
+        let bad = CookCookie {
+            subband_count: 0,
+            ..well_formed()
+        };
+        assert_eq!(bad.validate_geometry(), Err(Error::CookieZeroSubbandCount));
+    }
+
+    #[test]
+    fn validate_geometry_rejects_zero_samples_product() {
+        let bad = CookCookie {
+            samples_per_frame_x_channels: 0,
+            ..well_formed()
+        };
+        assert_eq!(
+            bad.validate_geometry(),
+            Err(Error::CookieZeroSamplesProduct)
+        );
+    }
+
+    #[test]
+    fn parse_rejects_extended_cookie_with_invalid_channels() {
+        // Channels field lives at cookie [0xc..0xd] big-endian: set
+        // both bytes to encode a channel count of 3 (outside {1, 2}).
+        let mut blob = REAL_COOKIE;
+        blob[12] = 0x00;
+        blob[13] = 0x03;
+        assert_eq!(
+            CookCookie::parse(&blob),
+            Err(Error::CookieInvalidChannels { got: 3 })
+        );
+    }
+
+    #[test]
+    fn parse_rejects_extended_cookie_with_zero_channels() {
+        // Channels = 0 at cookie [0xc..0xd] (a divide-by-zero in
+        // samples_per_frame, structurally malformed).
+        let mut blob = REAL_COOKIE;
+        blob[12] = 0x00;
+        blob[13] = 0x00;
+        assert_eq!(
+            CookCookie::parse(&blob),
+            Err(Error::CookieInvalidChannels { got: 0 })
+        );
+    }
+
+    #[test]
+    fn parse_rejects_extended_cookie_with_zero_subband_count() {
+        let mut blob = REAL_COOKIE;
+        blob[6] = 0x00;
+        blob[7] = 0x00;
+        assert_eq!(CookCookie::parse(&blob), Err(Error::CookieZeroSubbandCount));
+    }
+
+    #[test]
+    fn parse_rejects_extended_cookie_with_zero_samples_product() {
+        let mut blob = REAL_COOKIE;
+        blob[4] = 0x00;
+        blob[5] = 0x00;
+        assert_eq!(
+            CookCookie::parse(&blob),
+            Err(Error::CookieZeroSamplesProduct)
+        );
+    }
+
+    #[test]
+    fn parse_surfaces_first_failure_under_multi_field_malformation() {
+        // The validate_geometry order is product → subband → channels.
+        // A cookie that is malformed across all three fields surfaces
+        // the product failure first (the order is documented on
+        // `validate_geometry`).
+        let mut blob = REAL_COOKIE;
+        blob[4] = 0x00;
+        blob[5] = 0x00; // zero product
+        blob[6] = 0x00;
+        blob[7] = 0x00; // zero subband
+        blob[12] = 0x00;
+        blob[13] = 0x03; // invalid channels
+        assert_eq!(
+            CookCookie::parse(&blob),
+            Err(Error::CookieZeroSamplesProduct)
+        );
+    }
+
+    #[test]
+    fn parsed_cookies_are_always_geometry_well_formed() {
+        // Every successful parse must satisfy validate_geometry by
+        // construction — the contract `CookCookie::parse` documents.
+        let c = CookCookie::parse(&REAL_COOKIE).unwrap();
+        assert!(c.validate_geometry().is_ok());
+        // Doubly: the channel count is in {1, 2}; the subband count
+        // and product are non-zero.
+        assert!(c.channels == 1 || c.channels == 2);
+        assert!(c.subband_count >= 1);
+        assert!(c.samples_per_frame_x_channels >= 1);
     }
 }
