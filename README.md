@@ -82,7 +82,14 @@ numeric facts tables + real-stream validation).
   sub_packet_size`, `pcm_bytes_per_call = sub_packets_per_call ×
   samples_per_frame × channels × 2`, plus first-call overlap-add
   warm-up accounting. Rejects every divide-by-zero (`+0x06 = 0`,
-  `+0x0a = 0`) and every cookie/flavor disagreement. Pinned
+  `+0x0a = 0`) and every cookie/flavor disagreement. The
+  descriptor-side spf-recovery step is also exposed on its own as
+  [`Descriptor::recover_samples_per_frame`](src/init.rs) so a stream
+  sniffer can reproduce the backend `idiv` at `cook.dll!0x21c2`
+  (`validation/04` §4.2: `2048 / 2 = 1024`) without committing to a
+  full flavor cross-check yet — the typed `Error::ZeroDivisorChannels`
+  surfaces the divide-by-zero path the same way the full pipeline
+  does. Pinned
   end-to-end against `FUN_RM_32.rm` in
   `tests/realstream_decode_config.rs`: 144 `RADecode` calls reproduce
   the validator's 2 936 832-byte total PCM, 20 480-byte steady-state

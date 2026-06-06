@@ -30,6 +30,15 @@
 //! the validator measured (`20 480` bytes in steady state on the
 //! validated stream) so consumers can size their output buffers
 //! deterministically.
+//!
+//! The single-step descriptor → samples-per-frame recovery is also
+//! exposed as a typed accessor:
+//! [`Descriptor::recover_samples_per_frame`] reproduces the backend
+//! `idiv` at `cook.dll!0x21c2` (`validation/04` §4.2) on its own and
+//! returns the recovered scalar for callers that need it before
+//! reaching [`DecodeConfig::from_inputs`] — e.g. a stream sniffer
+//! that wants to know the transform frame length without committing
+//! to a full flavor cross-check yet.
 
 use crate::{cookie::CookCookie, flavor::FlavorRecord, Error};
 
@@ -67,6 +76,31 @@ pub struct Descriptor {
     /// Descriptor `+0x0a`: the sub-packet size in bytes; divisor of
     /// `frame_bytes` to derive sub-packets-per-call.
     pub sub_packet_size: u16,
+}
+
+impl Descriptor {
+    /// Recover `samples_per_frame` from a parsed cookie by applying the
+    /// descriptor's `channels_divisor` (`+0x06`) to the cookie's
+    /// `[4..6]` product (`samples_per_frame × channels`).
+    ///
+    /// Reproduces the `idiv` at `cook.dll!0x21c2` inside the backend
+    /// init `0x20c0` (`validation/04` §4.2): on the validated stream the
+    /// cookie carries `2048` at `[4..6]` and the descriptor carries
+    /// `2` at `+0x06`, so the backend recovers `samples_per_frame = 1024`.
+    /// This is the single typed wrapper for that divisor semantic;
+    /// [`DecodeConfig::from_inputs`] calls it as part of the cookie /
+    /// descriptor / flavor cross-check.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::ZeroDivisorChannels`] if [`Self::channels_divisor`]
+    ///   is `0` (would divide-by-zero in `backend init 0x20c0`).
+    pub fn recover_samples_per_frame(&self, cookie: &CookCookie) -> Result<u32, Error> {
+        if self.channels_divisor == 0 {
+            return Err(Error::ZeroDivisorChannels);
+        }
+        Ok(cookie.samples_per_frame_x_channels as u32 / self.channels_divisor as u32)
+    }
 }
 
 /// A fully-wired decoder configuration.
@@ -157,9 +191,12 @@ impl DecodeConfig {
         // Independent recovery: the cookie's product divided by the
         // descriptor's channel scalar should agree with the flavor's
         // samples_per_frame. Anything else would mean the descriptor
-        // came from a different stream than the cookie.
-        let recovered_spf =
-            cookie.samples_per_frame_x_channels as u32 / descriptor.channels_divisor as u32;
+        // came from a different stream than the cookie. The
+        // zero-divisor guard at the head of [`Descriptor::
+        // recover_samples_per_frame`] is redundant with the
+        // [`Error::ZeroDivisorChannels`] check above but cheap; both
+        // converge on the same typed rejection.
+        let recovered_spf = descriptor.recover_samples_per_frame(cookie)?;
         if recovered_spf != flavor.samples_per_frame {
             return Err(Error::CookieFlavorMismatch);
         }
@@ -455,5 +492,65 @@ mod tests {
         let err = DecodeConfig::from_inputs(&bad, &bad_desc, &real_flavor(), REAL_FRAME_BYTES)
             .unwrap_err();
         assert_eq!(err, Error::CookieInvalidChannels { got: 5 });
+    }
+
+    // --- Descriptor::recover_samples_per_frame (validation/04 §4.2) ----
+
+    #[test]
+    fn recover_samples_per_frame_matches_validated_stream() {
+        // `validation/04` §4.2: the backend init `0x20c0` divides the
+        // cookie's `[4..6]` product (2048) by the descriptor's `+0x06`
+        // scalar (2) to recover `samples_per_frame = 1024`.
+        let cookie = real_cookie();
+        let recovered = REAL_DESCRIPTOR.recover_samples_per_frame(&cookie).unwrap();
+        assert_eq!(recovered, 1024);
+        assert_eq!(recovered, real_flavor().samples_per_frame);
+    }
+
+    #[test]
+    fn recover_samples_per_frame_zero_divisor_rejected() {
+        let bad = Descriptor {
+            channels_divisor: 0,
+            sub_packet_size: 93,
+        };
+        let err = bad.recover_samples_per_frame(&real_cookie()).unwrap_err();
+        assert_eq!(err, Error::ZeroDivisorChannels);
+    }
+
+    #[test]
+    fn recover_samples_per_frame_mono_divisor_yields_different_spf() {
+        // Pretend the descriptor came from a mono build: divisor=1
+        // would recover samples_per_frame=2048 from the stereo cookie's
+        // product (2048). The method is just integer division; the
+        // caller is responsible for cross-checking against the flavor.
+        let mono_div = Descriptor {
+            channels_divisor: 1,
+            sub_packet_size: 93,
+        };
+        let recovered = mono_div.recover_samples_per_frame(&real_cookie()).unwrap();
+        assert_eq!(recovered, 2048);
+    }
+
+    #[test]
+    fn recover_samples_per_frame_zero_product_yields_zero() {
+        // A cookie that passed `validate_geometry()` always has a
+        // non-zero `[4..6]` product, so this case can only arise from a
+        // literal-built cookie that skipped validation. The method
+        // itself does not re-validate the cookie; it just performs the
+        // divisor arithmetic faithfully (the backend's `idiv` would
+        // produce 0 the same way). Cross-check + structural guard sit
+        // at the `DecodeConfig::from_inputs` layer.
+        let zero_product = crate::cookie::CookCookie {
+            selector: crate::cookie::SELECTOR_EXTENDED,
+            samples_per_frame_x_channels: 0,
+            subband_count: 32,
+            reserved: 0,
+            channels: 2,
+            stereo_mode: 4,
+        };
+        let recovered = REAL_DESCRIPTOR
+            .recover_samples_per_frame(&zero_product)
+            .unwrap();
+        assert_eq!(recovered, 0);
     }
 }

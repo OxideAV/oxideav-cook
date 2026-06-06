@@ -8,6 +8,19 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `Descriptor::recover_samples_per_frame(&CookCookie) -> Result<u32, Error>`:
+  typed accessor for the descriptor-side spf-recovery step. Reproduces
+  the `idiv` at `cook.dll!0x21c2` inside the backend init `0x20c0` that
+  `docs/audio/cook/validation/04-cook-stream-validation.md` §4.2 pins
+  (on the validated stream: cookie `[4..6] = 2048`, descriptor
+  `+0x06 = 2` ⇒ recovered `samples_per_frame = 1024`). Returns the
+  typed `Error::ZeroDivisorChannels` when the descriptor's
+  `channels_divisor` is `0` (would divide-by-zero in the backend
+  init). `DecodeConfig::from_inputs` now delegates its inline
+  divisor-then-cross-check step to this method; the recover-only
+  accessor lets a stream sniffer fetch the transform frame length from
+  cookie + descriptor without committing to a full flavor cross-check
+  yet.
 - `CookCookie::validate_geometry() -> Result<(), Error>`: structural
   well-formedness guard for the cookie body, anchored to the three
   field-level invariants `docs/audio/cook/spec/02-cook-flavor-and-
