@@ -23,6 +23,43 @@ const FLAVOR_TABLE_CSV: &str = include_str!("../tables/flavor-geometry-table.csv
 /// index 30 a single-subband sentinel) carry usable geometry.
 pub const FLAVOR_COUNT: u8 = 31;
 
+/// Value returned by the ordinal-7 export `RAGetNumberOfFlavors`
+/// (`cook.dll!0x1620`), pinned by
+/// `docs/audio/cook/provenance/03-cook-audit.md` audit point #2 as the
+/// hardcoded immediate `mov ax, 0x0f; ret` (= 15). Surfaced as a typed
+/// constant so a stream sniffer that reproduces the binary's published
+/// API surface can return the same legacy flavor-count without
+/// retyping the literal.
+///
+/// Distinct from [`FLAVOR_COUNT`] (= 31, the count of decodable
+/// geometry records in the vendored table) and from
+/// [`RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED`] (= 34, the property-
+/// descriptor count returned by the ordinal-9 sibling).
+pub const RA_GET_NUMBER_OF_FLAVORS_ADVERTISED: u8 = 0x0f;
+
+/// Value returned by the ordinal-9 export `RAGetNumberOfFlavors2`
+/// (`cook.dll!0x1630`), pinned by
+/// `docs/audio/cook/provenance/03-cook-audit.md` audit point #2 as the
+/// hardcoded immediate `mov ax, 0x22; ret` (= 34). The same `0x22`
+/// immediate gates the `RASetFlavor` upper bound (`cmp …, 0x22` at
+/// `cook.dll!0x1640`) and the property-worker bound at
+/// `cook.dll!0x17a0`; audit point #12 resolves it as the
+/// property-descriptor count, distinct from [`FLAVOR_COUNT`] (= 31,
+/// the count of decodable geometry records).
+pub const RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED: u8 = 0x22;
+
+/// The closing single-subband sentinel record's index. The geometry
+/// record at this index is the non-music sentinel pinned by
+/// `docs/audio/cook/spec/02-cook-flavor-and-extradata-layout.md` §1.1
+/// (audit-resolved block: *"the last geometry record (index 30 =
+/// `(17,5,1024,1,1,256,44100)`) has subband count 1 and is a sentinel /
+/// non-music entry"*).
+///
+/// Use [`FlavorRecord::is_sentinel`] to discriminate this record at
+/// runtime and [`iter_playable_flavor_records`] to walk only the 30
+/// non-sentinel presets at indices 0..=29.
+pub const SENTINEL_FLAVOR_INDEX: u8 = 30;
+
 /// One row of the flavor geometry table.
 ///
 /// All fields are stored as `u32` exactly as the table encodes them.
@@ -46,6 +83,22 @@ pub struct FlavorRecord {
 }
 
 impl FlavorRecord {
+    /// True iff this record is the closing single-subband sentinel
+    /// pinned by `docs/audio/cook/spec/02-cook-flavor-and-extradata-
+    /// layout.md` §1.1 (the index-30 non-music entry).
+    ///
+    /// The discriminating field is `subband_count == 1`: every other
+    /// well-formed flavor record carries a `subband_count` of at least
+    /// `12` (audit point #14 / extracted table; the field grows with
+    /// sample rate and bitrate per spec/02 §1 line 34), so the
+    /// sentinel is the lone record that hits the minimum value.
+    ///
+    /// Useful for walkers that should skip the sentinel: see
+    /// [`iter_playable_flavor_records`].
+    pub fn is_sentinel(&self) -> bool {
+        self.subband_count == 1
+    }
+
     /// Parse one comma-separated record line into a [`FlavorRecord`].
     ///
     /// Returns `None` if the line does not hold exactly seven `u32`
@@ -102,6 +155,21 @@ pub fn iter_flavor_records() -> impl Iterator<Item = (u8, FlavorRecord)> {
     data_lines()
         .enumerate()
         .filter_map(|(i, l)| FlavorRecord::parse_line(l).map(|r| (i as u8, r)))
+}
+
+/// Iterator over every playable (non-sentinel) `(index, record)` pair
+/// in the vendored geometry table.
+///
+/// Visits exactly `FLAVOR_COUNT - 1` (= 30) pairs, in table order from
+/// index `0` to index `29` — the index-30 sentinel record
+/// ([`SENTINEL_FLAVOR_INDEX`]) is filtered out by
+/// [`FlavorRecord::is_sentinel`]. Use this walker when a consumer
+/// wants to enumerate only the decodable music presets.
+///
+/// Anchored by `docs/audio/cook/spec/02-cook-flavor-and-extradata-
+/// layout.md` §1.1 (sentinel record at index 30).
+pub fn iter_playable_flavor_records() -> impl Iterator<Item = (u8, FlavorRecord)> {
+    iter_flavor_records().filter(|(_, r)| !r.is_sentinel())
 }
 
 /// Return every flavor index whose geometry record matches the five
@@ -235,6 +303,87 @@ mod tests {
             assert_eq!(r.stereo_mode, 4);
             assert_eq!(r.samples_per_frame, 1024);
         }
+    }
+
+    #[test]
+    fn advertised_counts_are_15_and_34() {
+        // Pin the two published API-surface counts the binary's
+        // `RAGetNumberOfFlavors` / `RAGetNumberOfFlavors2` exports
+        // return as hardcoded immediates (audit point #2).
+        assert_eq!(RA_GET_NUMBER_OF_FLAVORS_ADVERTISED, 15);
+        assert_eq!(RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED, 34);
+        // The two advertised counts are distinct from each other and
+        // distinct from the table-derived FLAVOR_COUNT.
+        assert_ne!(
+            RA_GET_NUMBER_OF_FLAVORS_ADVERTISED,
+            RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED
+        );
+        assert_ne!(RA_GET_NUMBER_OF_FLAVORS_ADVERTISED, FLAVOR_COUNT);
+        assert_ne!(RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED, FLAVOR_COUNT);
+        // The sentinel index is the closing entry of the table.
+        assert_eq!(SENTINEL_FLAVOR_INDEX, FLAVOR_COUNT - 1);
+    }
+
+    #[test]
+    fn sentinel_predicate_fires_only_on_index_30() {
+        // Walk every well-formed record. is_sentinel() is true exactly
+        // at SENTINEL_FLAVOR_INDEX (= 30) and false on every other.
+        for (idx, rec) in iter_flavor_records() {
+            if idx == SENTINEL_FLAVOR_INDEX {
+                assert!(
+                    rec.is_sentinel(),
+                    "index {idx} must be the sentinel (subband_count = 1): {rec:?}"
+                );
+                assert_eq!(rec.subband_count, 1);
+            } else {
+                assert!(
+                    !rec.is_sentinel(),
+                    "index {idx} is a playable preset, but is_sentinel() fired: {rec:?}"
+                );
+                // The discriminating threshold is `>= 2`: only the
+                // sentinel hits the minimum `1`. The smallest playable
+                // record (index 8: 9 kHz mono 8-kHz preset) carries
+                // `subband_count = 9`; the rest grow with sample rate
+                // and bitrate per spec/02 §1 line 34.
+                assert!(
+                    rec.subband_count >= 2,
+                    "playable record at index {idx} should have subband_count >= 2: {rec:?}"
+                );
+            }
+        }
+        // The known sentinel shape, end-to-end:
+        // `(17, 5, 1024, 1, 1, 256, 44100)` per spec/02 §1.1.
+        let sentinel = flavor_record(SENTINEL_FLAVOR_INDEX).unwrap();
+        assert!(sentinel.is_sentinel());
+        assert_eq!(sentinel.coupling_mode, 17);
+        assert_eq!(sentinel.stereo_mode, 5);
+        assert_eq!(sentinel.samples_per_frame, 1024);
+        assert_eq!(sentinel.channels, 1);
+        assert_eq!(sentinel.subband_count, 1);
+        assert_eq!(sentinel.frame_bytes, 256);
+        assert_eq!(sentinel.sample_rate_hz, 44100);
+    }
+
+    #[test]
+    fn iter_playable_yields_exactly_30_records() {
+        // The playable walker visits FLAVOR_COUNT - 1 = 30 pairs,
+        // covering indices 0..=29 in order, each !is_sentinel().
+        let playable: Vec<(u8, FlavorRecord)> = iter_playable_flavor_records().collect();
+        assert_eq!(playable.len(), (FLAVOR_COUNT - 1) as usize);
+        for (i, (idx, rec)) in playable.iter().enumerate() {
+            assert_eq!(
+                *idx, i as u8,
+                "iter_playable must visit consecutive indices 0..=29"
+            );
+            assert!(*idx < SENTINEL_FLAVOR_INDEX);
+            assert!(!rec.is_sentinel());
+            // Round-trip vs flavor_record at the same index.
+            assert_eq!(Some(*rec), flavor_record(*idx));
+        }
+        // The sentinel must be absent from the playable walk.
+        assert!(playable
+            .iter()
+            .all(|(idx, _)| *idx != SENTINEL_FLAVOR_INDEX));
     }
 
     #[test]

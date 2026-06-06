@@ -32,7 +32,22 @@ numeric facts tables + real-stream validation).
   `coupling_mode`, so the real `FUN_RM_32.rm` cookie legitimately
   matches both records 21 and 22 (they differ only in `frame_bytes`,
   744 vs 1024) and the container-supplied `flavor` index is what
-  disambiguates at open time.
+  disambiguates at open time. [`FlavorRecord::is_sentinel`](src/flavor.rs)
+  discriminates the closing single-subband sentinel record at index 30
+  (`SENTINEL_FLAVOR_INDEX`) the spec/02 §1.1 audit-resolved block pins
+  (`(17, 5, 1024, 1, 1, 256, 44100)` — `subband_count = 1` is the
+  identifying field), and
+  [`iter_playable_flavor_records()`](src/flavor.rs) walks exactly the
+  30 playable presets at indices 0..=29. Two audit-anchored constants
+  surface the hardcoded immediates the binary's ordinal-7 / ordinal-9
+  exports return:
+  [`RA_GET_NUMBER_OF_FLAVORS_ADVERTISED`](src/flavor.rs) = 15
+  (`cook.dll!0x1620`, `mov ax, 0x0f`) and
+  [`RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED`](src/flavor.rs) = 34
+  (`cook.dll!0x1630`, `mov ax, 0x22`, also the `RASetFlavor` upper
+  bound at `cook.dll!0x1640`), distinct from the table-derived
+  [`FLAVOR_COUNT`](src/flavor.rs) = 31 — anchored to
+  `docs/audio/cook/provenance/03-cook-audit.md` audit point #2 / #12.
 - **Extradata cookie parser** — [`CookCookie::parse`](src/cookie.rs)
   reads the big-endian per-stream extradata cookie for the extended
   (`0x01000003`) selector and cross-checks that it self-describes the

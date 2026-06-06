@@ -146,7 +146,9 @@ pub use cookie::{CookCookie, SelectorFamily, EXTENDED_COOKIE_LEN, SELECTOR_EXTEN
 pub use descramble::{descramble_packet, xor_descramble, xor_descramble_into, xor_key, CommonMode};
 pub use driver::{Driver, PreparedCall};
 pub use flavor::{
-    flavor_indices_matching_cookie, flavor_record, iter_flavor_records, FlavorRecord, FLAVOR_COUNT,
+    flavor_indices_matching_cookie, flavor_record, iter_flavor_records,
+    iter_playable_flavor_records, FlavorRecord, FLAVOR_COUNT, RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED,
+    RA_GET_NUMBER_OF_FLAVORS_ADVERTISED, SENTINEL_FLAVOR_INDEX,
 };
 pub use init::{DecodeConfig, Descriptor, PCM_BYTES_PER_SAMPLE, RADECODE_FLAGS_DECODE};
 pub use session::CallSession;

@@ -8,6 +8,25 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `FlavorRecord::is_sentinel() -> bool`, `iter_playable_flavor_records()`,
+  and three named constants
+  (`RA_GET_NUMBER_OF_FLAVORS_ADVERTISED = 15`,
+  `RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED = 34`,
+  `SENTINEL_FLAVOR_INDEX = 30`): a typed structural discriminator
+  separating the 30 playable flavor presets (indices 0..=29) from the
+  closing single-subband sentinel record at index 30 the
+  `docs/audio/cook/spec/02-cook-flavor-and-extradata-layout.md` §1.1
+  audit-resolved block pins. The two `RAGetNumberOfFlavors*` constants
+  surface the hardcoded immediates the binary's ordinal-7 / ordinal-9
+  exports return (`docs/audio/cook/provenance/03-cook-audit.md` audit
+  point #2: `mov ax, 0x0f` and `mov ax, 0x22`) as named, audit-anchored
+  values distinct from the table-derived `FLAVOR_COUNT = 31`. The
+  `is_sentinel()` predicate discriminates on `subband_count == 1` (the
+  sentinel hits the minimum value; every playable record carries
+  `subband_count >= 9`), and `iter_playable_flavor_records()` is the
+  walker that visits exactly the 30 non-sentinel `(index, record)`
+  pairs in table order for callers that want only the decodable music
+  presets.
 - `Descriptor::recover_samples_per_frame(&CookCookie) -> Result<u32, Error>`:
   typed accessor for the descriptor-side spf-recovery step. Reproduces
   the `idiv` at `cook.dll!0x21c2` inside the backend init `0x20c0` that
