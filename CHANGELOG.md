@@ -8,6 +8,34 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `bit_alloc` module — typed structural accessor for the 51-entry
+  bit-allocation category-index LUT at `cook.dll!0x8c40` (audit point
+  #14 in `docs/audio/cook/provenance/03-cook-audit.md`;
+  `docs/audio/cook/tables/category-index-lut.meta`: *"monotone-
+  nondecreasing small-integer index LUT (0..19); maps a 51-position
+  axis onto 20 categories"*). Two newtypes — `BitAllocAxisPosition` in
+  `0..=50` (built by the fallible `BitAllocAxisPosition::new` returning
+  `Error::BitAllocAxisOutOfRange { got: u8 }` for out-of-range values,
+  or by the panicking `BitAllocAxisPosition::new_const` for const
+  contexts) and `BitAllocCategory` in `0..=19` (constructible only via
+  the LUT lookup or the panicking const-context constructor, so any
+  value of the type carries the in-range invariant) — wrap the single
+  lookup `bit_alloc_category_for_position(BitAllocAxisPosition) ->
+  BitAllocCategory` over the vendored
+  `tables::category_index_lut()` slice. Three audit-anchored constants
+  surface the LUT bounds: `BIT_ALLOC_AXIS_LEN = 51`,
+  `BIT_ALLOC_CATEGORY_COUNT = 20`, `MAX_BIT_ALLOC_CATEGORY = 19`. Unit
+  tests pin the `.meta`'s three structural invariants end-to-end
+  through the typed API (every position maps to a category in `0..=19`;
+  the mapping is monotone-nondecreasing across all 51 positions; every
+  category in the full `0..=19` range is reached by some axis position
+  — the last property is what justifies the `BIT_ALLOC_CATEGORY_COUNT =
+  20` constant). The LUT's runtime consumer inside the decoder backend
+  (plausibly paired with the `0x8fcc` category-expectation table the
+  dequant worker `0x4600` reads — audit point #17 is left as
+  *"tightened but still GAP: 2D row/column layout not statically
+  unambiguous"*) is not pinned by this round; the structural lookup is
+  the piece this module wires.
 - `FlavorRecord::is_sentinel() -> bool`, `iter_playable_flavor_records()`,
   and three named constants
   (`RA_GET_NUMBER_OF_FLAVORS_ADVERTISED = 15`,

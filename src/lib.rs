@@ -105,7 +105,22 @@
 //! `(bias + |sample| * step)` sentence describes its arithmetic — too
 //! narrow to wire without a band-loop pin).
 //!
-//! Round 12 (this round) adds the structural cookie-geometry guard:
+//! Round 13 (this round) adds the typed structural accessor for the
+//! 51-entry bit-allocation category LUT (`cook.dll!0x8c40`, audit point
+//! #14): the [`bit_alloc`] module wraps the
+//! `tables::category_index_lut()` raw slice in two newtypes
+//! ([`BitAllocAxisPosition`] in `0..=50` and [`BitAllocCategory`] in
+//! `0..=19`) plus the single lookup
+//! [`bit_alloc_category_for_position`]. The LUT itself is byte-validated
+//! to the meta's *"51 non-decreasing u32 values spanning 0..19"*
+//! invariant, and the typed accessor surfaces an out-of-range axis
+//! position as the new [`Error::BitAllocAxisOutOfRange`] typed error.
+//! The LUT's runtime consumer inside the backend (plausibly paired with
+//! the `0x8fcc` category-expectation table audit point #17 leaves as
+//! a tightened-but-still GAP) is *not* wired by this round — only the
+//! structural lookup is.
+//!
+//! Round 12 adds the structural cookie-geometry guard:
 //! [`CookCookie::validate_geometry`] checks the three independent
 //! field-level invariants spec/02 §1 pins on every well-formed flavor
 //! record — `channels ∈ {1, 2}` (line 33 / line 50), `subband_count >=
@@ -129,6 +144,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod bit_alloc;
 pub mod category;
 pub mod cookie;
 pub mod descramble;
@@ -139,6 +155,10 @@ pub mod session;
 pub mod subpacket;
 pub mod tables;
 
+pub use bit_alloc::{
+    bit_alloc_category_for_position, BitAllocAxisPosition, BitAllocCategory, BIT_ALLOC_AXIS_LEN,
+    BIT_ALLOC_CATEGORY_COUNT, MAX_BIT_ALLOC_AXIS_POSITION, MAX_BIT_ALLOC_CATEGORY,
+};
 pub use category::{
     category_parameters, CategoryIndex, CategoryParameters, CATEGORY_COUNT, MAX_CATEGORY_INDEX,
 };
@@ -267,6 +287,15 @@ pub enum Error {
         /// The supplied category index.
         got: u8,
     },
+    /// A bit-allocation axis position was outside the
+    /// `0..=[crate::MAX_BIT_ALLOC_AXIS_POSITION]` range the 51-entry
+    /// `cook.dll!0x8c40` LUT covers
+    /// (`docs/audio/cook/tables/category-index-lut.meta`,
+    /// `element_count: 51`).
+    BitAllocAxisOutOfRange {
+        /// The supplied axis position.
+        got: u8,
+    },
     /// Cookie `[0xc..0xd]` channels field declared a value outside the
     /// `{1, 2}` set spec/02 §1 pins for every well-formed flavor record
     /// (line 33: *"channels: **1** or **2**"*; line 50: *"channels in
@@ -380,6 +409,12 @@ impl core::fmt::Display for Error {
                 "oxideav-cook: gain/quantiser category index {got} is out of range \
                  (max is {})",
                 MAX_CATEGORY_INDEX
+            ),
+            Error::BitAllocAxisOutOfRange { got } => write!(
+                f,
+                "oxideav-cook: bit-allocation axis position {got} is out of range \
+                 (max is {})",
+                MAX_BIT_ALLOC_AXIS_POSITION
             ),
             Error::CookieInvalidChannels { got } => write!(
                 f,

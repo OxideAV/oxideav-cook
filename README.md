@@ -191,6 +191,33 @@ numeric facts tables + real-stream validation).
   `advance_after_decode` reproduces the validator's `2 936 832`-byte
   total, and `decode_call` on a wired-correct packet/output pair
   signals the backend GAP without advancing the cursor.
+- **Bit-allocation category-index LUT** —
+  [`bit_alloc`](src/bit_alloc.rs) wires the typed structural accessor
+  for the 51-entry `cook.dll!0x8c40` table (audit point #14 in
+  `docs/audio/cook/provenance/03-cook-audit.md`; `.meta`: *"monotone-
+  nondecreasing small-integer index LUT (0..19); maps a 51-position
+  axis onto 20 categories"*). Two newtypes
+  ([`BitAllocAxisPosition`](src/bit_alloc.rs) in `0..=50` enforced by
+  [`BitAllocAxisPosition::new`](src/bit_alloc.rs), and
+  [`BitAllocCategory`](src/bit_alloc.rs) in `0..=19` — the latter only
+  constructible via the lookup or the panicking const-context
+  constructor) wrap
+  [`bit_alloc_category_for_position`](src/bit_alloc.rs) over the
+  vendored 51-entry `category-index-lut.csv` slice. Three audit-anchored
+  constants surface the LUT bounds:
+  [`BIT_ALLOC_AXIS_LEN`](src/bit_alloc.rs) = 51,
+  [`BIT_ALLOC_CATEGORY_COUNT`](src/bit_alloc.rs) = 20, and
+  [`MAX_BIT_ALLOC_CATEGORY`](src/bit_alloc.rs) = 19. Out-of-range axis
+  positions raise the new `Error::BitAllocAxisOutOfRange { got: u8 }`
+  typed error, and the unit tests pin the meta's three structural
+  invariants end-to-end (every position maps to a category in `0..=19`,
+  the mapping is monotone-nondecreasing across all 51 positions, every
+  category in the full `0..=19` range is reached by some position). The
+  LUT's runtime consumer inside the decoder backend (plausibly paired
+  with the `0x8fcc` category-expectation table — audit point #17 is
+  *"tightened but still GAP: 2D row/column layout not statically
+  unambiguous"*) is not pinned by this round; the structural lookup is
+  the piece this module wires.
 - **Per-category gain/quantiser parameter bundle** —
   [`category`](src/category.rs) wires the typed accessor for the three
   parallel `[cat*4 + base]` arrays the per-band quantiser worker
