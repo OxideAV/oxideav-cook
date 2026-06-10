@@ -138,7 +138,7 @@
 //! structurally-malformed cookie from a cookie that simply names the
 //! wrong flavor record ([`Error::CookieFlavorMismatch`]).
 //!
-//! Round 14 (this round) adds the typed exponent-indexed accessors for
+//! Round 14 adds the typed exponent-indexed accessors for
 //! the two back-to-back 127-entry scale ladders (`cook.dll!0x91fc` =
 //! `2^k`, `cook.dll!0x93f8` = `2^(k/2)`, both for `k = -63..+63`): the
 //! [`scale`] module wraps the raw `tables::pow2_exponent_table()` /
@@ -155,9 +155,28 @@
 //! exponent-producing runtime stage (which worker feeds which ladder)
 //! remains a spec/01 §6 GAP; only the typed table access is wired.
 //!
+//! Round 15 (this round) wires the `RADecode` `flags` decode/observe
+//! gate — the first half of the backend frame-decode slot
+//! `[backend_vtable + 0x0c]` the validator pinned. The decode driver
+//! `cook.dll!0x1260` forwards `(~flags) & 1` to the backend
+//! (`validation/04` §4.3): with `flags` bit 0 = 1 the backend decodes
+//! the bitstream; with bit 0 = 0 it emits **zeroed overlap-add output
+//! independent of the input** (verified by the validator: all-`0xFF`
+//! input produces the same zero output as the real packets). The
+//! typed [`DecodeGate`] mirrors that computation
+//! ([`DecodeGate::from_flags`] / [`DecodeGate::backend_gate_bit`]),
+//! and [`Driver::decode_call_with_flags`] is the six-argument
+//! `RADecode` analog: on the observe gate it zero-fills the per-call
+//! PCM budget and advances the cursor (the driver's buffer accounting
+//! is gate-independent, so the observe path walks the same warm-up /
+//! steady-state cadence); on the real-decode gate the
+//! bitstream/transform backend remains [`Error::NotImplemented`].
+//! [`Driver::decode_call`] is now the
+//! `flags = `[`RADECODE_FLAGS_DECODE`] shorthand.
+//!
 //! The transform / entropy decode pipeline itself still lands in later
-//! rounds — [`Error::NotImplemented`] continues to gate the decode
-//! path.
+//! rounds — [`Error::NotImplemented`] continues to gate the
+//! real-decode path.
 
 #![forbid(unsafe_code)]
 
@@ -182,7 +201,7 @@ pub use category::{
 };
 pub use cookie::{CookCookie, SelectorFamily, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
 pub use descramble::{descramble_packet, xor_descramble, xor_descramble_into, xor_key, CommonMode};
-pub use driver::{Driver, PreparedCall};
+pub use driver::{DecodeGate, Driver, PreparedCall};
 pub use flavor::{
     flavor_indices_matching_cookie, flavor_record, iter_flavor_records,
     iter_playable_flavor_records, FlavorRecord, FLAVOR_COUNT, RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED,

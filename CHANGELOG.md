@@ -8,6 +8,35 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `DecodeGate` — typed `(~flags) & 1` decode/observe gate the decode
+  driver `cook.dll!0x1260` forwards to the backend frame-decode method
+  `[backend_vtable + 0x0c]`
+  (`docs/audio/cook/validation/04-cook-stream-validation.md` §4.3 /
+  `docs/audio/cook/spec/01-cook-decoder-structure.md` §5): `flags`
+  bit 0 = 1 → `DecodeGate::Decode` (gate bit `0`, real bitstream
+  decode); bit 0 = 0 → `DecodeGate::Observe` (gate bit `1`, zeroed
+  overlap-add output independent of the input — the validator
+  verified all-`0xFF` input produces the same zero output as the real
+  packets). API: `DecodeGate::from_flags(u32)`,
+  `DecodeGate::backend_gate_bit()` (= literally `(~flags) & 1`),
+  `DecodeGate::is_decode()`.
+- `Driver::decode_call_with_flags` — the six-argument `RADecode`
+  analog taking the raw `flags` argument. The observe gate is
+  **implemented**: the per-call PCM budget is zero-filled (the
+  driver's buffer accounting is geometry-derived and
+  gate-independent, so the observe path walks the validator-pinned
+  warm-up / steady-state cadence) and the session cursor advances.
+  The real-decode gate still surfaces the bitstream/transform backend
+  as `Error::NotImplemented` without moving the cursor — that signal
+  stays reserved exclusively for the transform GAP.
+  `Driver::decode_call` is now the `flags = RADECODE_FLAGS_DECODE`
+  shorthand (behaviour unchanged). Pinned against all 144 real
+  packets of `FUN_RM_32.rm` in `tests/driver_realstream.rs`: the
+  observe-gate walk completes 144/144 calls with all-zero PCM summing
+  to the validator's `2 936 832`-byte total, and a real packet vs an
+  all-`0xFF` packet produce byte-identical observe output (the §4.3
+  verification, reproduced).
+
 - `scale` module — typed exponent-indexed accessors for the two
   back-to-back 127-entry f32 scale ladders at `cook.dll!0x91fc`
   (`2^k`) and `cook.dll!0x93f8` (`2^(k/2)`), both spanning

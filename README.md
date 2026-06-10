@@ -277,18 +277,44 @@ numeric facts tables + real-stream validation).
   `tests/descramble_realstream.rs`. The trailing partial word
   (`len % 4 != 0`) is copied verbatim — a recorded tail-handling
   DOCS-GAP.
+- **`RADecode` flags decode/observe gate** — [`DecodeGate`](src/driver.rs)
+  types the `(~flags) & 1` computation the decode driver
+  `cook.dll!0x1260` forwards to the backend frame-decode method
+  `[backend_vtable + 0x0c]`
+  (`docs/audio/cook/validation/04-cook-stream-validation.md` §4.3:
+  `flags` bit 0 = 1 → gate `0` → real bitstream decode; bit 0 = 0 →
+  gate `1` → zeroed overlap-add output **independent of the input** —
+  the validator verified all-`0xFF` input produces the same zero
+  output as the real packets). All other `flags` bits are masked away,
+  exactly as the binary's `& 1` does.
+  [`Driver::decode_call_with_flags`](src/driver.rs) is the
+  six-argument `RADecode` analog: the **observe gate is implemented**
+  (zero-fills the per-call PCM budget — the driver's buffer accounting
+  is geometry-derived and gate-independent, so the observe path walks
+  the validator's warm-up / steady-state cadence — and advances the
+  cursor), while the real-decode gate still surfaces the transform GAP
+  as `Error::NotImplemented` without moving the cursor.
+  `Driver::decode_call` is now the
+  `flags = RADECODE_FLAGS_DECODE` shorthand. Pinned against all 144
+  real packets of `FUN_RM_32.rm` in `tests/driver_realstream.rs`:
+  the observe-gate walk completes 144/144 calls with all-zero PCM
+  summing to the pinned `2 936 832`-byte total, and a real packet vs
+  an all-`0xFF` packet produce byte-identical observe output.
 
 ## Not yet implemented
 
-The backend frame-decode itself — the bitstream reader, gain/quantiser,
-inverse MDCT, optional LPC/temporal prediction, post-filter, and joint-
-stereo coupling sitting behind the `[backend_vtable + 0x0c]` slot —
-remains a `crate::Error::NotImplemented` GAP. The full-pipeline
-`Driver::decode_call` validates buffer sizes and runs stages 1+2, then
-surfaces that GAP signal explicitly so consumers can already wire the
-crate into a real container demuxer and treat the backend signal as the
-single documented gating value while the transform pipeline lands in
-later rounds. The `oxideav_core` registration glue and the cookie
+The real-decode half of the backend frame-decode — the bitstream
+reader, gain/quantiser, inverse MDCT, optional LPC/temporal prediction,
+post-filter, and joint-stereo coupling sitting behind the
+`[backend_vtable + 0x0c]` slot when the forwarded gate bit is `0` —
+remains a `crate::Error::NotImplemented` GAP (the observe half, gate
+bit `1`, is implemented: zeroed overlap-add output per validation/04
+§4.3). The full-pipeline `Driver::decode_call` /
+`Driver::decode_call_with_flags` validate buffer sizes and run stages
+1+2, then surface that GAP signal explicitly on the real-decode gate so
+consumers can already wire the crate into a real container demuxer and
+treat the backend signal as the single documented gating value while
+the transform pipeline lands in later rounds. The `oxideav_core` registration glue and the cookie
 layouts of the non-extended `0x01000001` / `0x01000002` mono/stereo
 siblings and the multichannel (`0x02000000`) backend family are also
 DOCS-GAPs — typed in `CookCookie::parse` so callers can triage

@@ -23,8 +23,8 @@
 #![allow(dead_code)]
 
 use oxideav_cook::{
-    flavor_record, CommonMode, CookCookie, DecodeConfig, Descriptor, Driver, Error,
-    EXTENDED_COOKIE_LEN,
+    flavor_record, CommonMode, CookCookie, DecodeConfig, DecodeGate, Descriptor, Driver, Error,
+    EXTENDED_COOKIE_LEN, RADECODE_FLAGS_DECODE,
 };
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/FUN_RM_32.rm");
@@ -234,6 +234,86 @@ fn decode_call_rejects_wrong_input_before_backend() {
     // Distinct from the backend GAP signal — invariants confirmed.
     assert_ne!(err, Error::NotImplemented);
     assert_eq!(driver.calls_completed(), 0);
+}
+
+#[test]
+fn observe_gate_walks_all_144_real_packets_emitting_zeroed_pcm() {
+    // validation/04 §4.3: with `flags` bit 0 = 0 the backend emits
+    // zeroed overlap-add output independent of the input. Feed all
+    // 144 real packets through decode_call_with_flags(flags = 0) —
+    // every call must complete, every output byte must be zero, and
+    // the cadence must reproduce the validator's pinned totals
+    // (8 192-byte warm-up, 20 480 bytes/call steady state,
+    // 2 936 832 bytes at call 144).
+    let mut driver = real_driver();
+    let payloads = collect_packet_payloads(FIXTURE);
+    assert_eq!(payloads.len(), VALIDATED_PACKETS as usize);
+
+    for (i, payload) in payloads.iter().enumerate() {
+        let want_pcm = if i == 0 {
+            VALIDATED_FIRST_CALL_PCM_BYTES as usize
+        } else {
+            VALIDATED_PCM_BYTES_PER_CALL as usize
+        };
+        assert_eq!(driver.next_call_pcm_bytes() as usize, want_pcm);
+        // Poison the output buffer so the zero-fill is observable.
+        let mut out = vec![0xA5u8; want_pcm];
+        driver
+            .decode_call_with_flags(payload, &mut out, 0, 0)
+            .unwrap_or_else(|e| panic!("observe-gate call {i}: {e:?}"));
+        assert!(
+            out.iter().all(|&b| b == 0),
+            "call {i}: observe-gate output must be zeroed PCM"
+        );
+    }
+
+    assert_eq!(driver.calls_completed(), VALIDATED_PACKETS);
+    assert_eq!(driver.total_pcm_emitted(), VALIDATED_TOTAL_PCM_BYTES);
+}
+
+#[test]
+fn observe_gate_output_matches_for_real_and_all_ff_input() {
+    // The validator's exact §4.3 verification, reproduced: an
+    // all-0xFF input gives the same zero output as the real packet
+    // on the observe gate.
+    let mut d_real = real_driver();
+    let mut d_ff = real_driver();
+    let payload = collect_packet_payloads(FIXTURE)[0];
+    let all_ff = vec![0xFFu8; payload.len()];
+    let mut out_real = vec![0x33u8; VALIDATED_FIRST_CALL_PCM_BYTES as usize];
+    let mut out_ff = vec![0xCCu8; VALIDATED_FIRST_CALL_PCM_BYTES as usize];
+    d_real
+        .decode_call_with_flags(payload, &mut out_real, 0, 0)
+        .unwrap();
+    d_ff.decode_call_with_flags(&all_ff, &mut out_ff, 0, 0)
+        .unwrap();
+    assert_eq!(out_real, out_ff, "observe output is input-independent");
+}
+
+#[test]
+fn decode_gate_constant_maps_to_decode_and_still_gaps() {
+    // RADECODE_FLAGS_DECODE (= 1) maps to the real-decode gate
+    // ((~1) & 1 = 0 forwarded to the backend), which is still the
+    // NotImplemented transform GAP — and the cursor must not move.
+    assert_eq!(
+        DecodeGate::from_flags(RADECODE_FLAGS_DECODE),
+        DecodeGate::Decode
+    );
+    assert_eq!(
+        DecodeGate::from_flags(RADECODE_FLAGS_DECODE).backend_gate_bit(),
+        0
+    );
+    assert_eq!(DecodeGate::from_flags(0).backend_gate_bit(), 1);
+
+    let mut driver = real_driver();
+    let payload = collect_packet_payloads(FIXTURE)[0];
+    let mut out = vec![0u8; VALIDATED_FIRST_CALL_PCM_BYTES as usize];
+    let err = driver
+        .decode_call_with_flags(payload, &mut out, 0, RADECODE_FLAGS_DECODE)
+        .unwrap_err();
+    assert_eq!(err, Error::NotImplemented);
+    assert_eq!(driver.calls_completed(), 0);
+    assert_eq!(driver.total_pcm_emitted(), 0);
 }
 
 #[test]

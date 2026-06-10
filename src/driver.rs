@@ -30,8 +30,12 @@
 //!    ([`SubPacketLayout::iter_call`]).
 //! 4. Invokes the backend frame-decode method
 //!    `[backend_vtable + 0x0c]` exactly **once per call**
-//!    (`validation/04` §4.3 + §5); subsequent sub-packets in the same
-//!    call are consumed through the carry buffer at context `+0x20`.
+//!    (`validation/04` §4.3 + §5), forwarding `(~flags) & 1` as the
+//!    backend's decode/observe gate ([`DecodeGate`]): gate `0`
+//!    (`flags` bit 0 = 1) performs the real bitstream decode; gate `1`
+//!    (`flags` bit 0 = 0) emits zeroed overlap-add output independent
+//!    of the input. Subsequent sub-packets in the same call are
+//!    consumed through the carry buffer at context `+0x20`.
 //! 5. Emits PCM at the validator-pinned cadence: first call
 //!    [`DecodeConfig::warmup_pcm_bytes`] bytes, then
 //!    [`DecodeConfig::pcm_bytes_per_call`] bytes per call.
@@ -57,11 +61,21 @@
 //!   cursor (the backend has not been invoked yet); call
 //!   [`Driver::advance_after_decode`] once the consumer's backend has
 //!   filled the per-call PCM budget.
-//! - [`Driver::decode_call`] — the full-pipeline per-call entry point.
-//!   Wires stages 1–5; the backend invocation itself still surfaces as
-//!   [`crate::Error::NotImplemented`]. Provided so the public decode
-//!   path has a single orchestrated entry point even before the backend
-//!   lands.
+//! - [`Driver::decode_call_with_flags`] — the full-pipeline per-call
+//!   entry point with the raw `RADecode` `flags` argument. Wires
+//!   stages 1–5. The observe gate ([`DecodeGate::Observe`], `flags`
+//!   bit 0 = 0) is **implemented**: per `validation/04` §4.3 the
+//!   backend emits zeroed overlap-add output independent of the
+//!   input, so the call zero-fills the per-call PCM budget and
+//!   advances the cursor. The real-decode gate
+//!   ([`DecodeGate::Decode`]) still surfaces the bitstream/transform
+//!   backend as [`crate::Error::NotImplemented`].
+//! - [`Driver::decode_call`] — the real-decode shorthand
+//!   (`flags = `[`crate::RADECODE_FLAGS_DECODE`]); provided so the
+//!   public decode path has a single orchestrated entry point even
+//!   before the transform backend lands.
+//! - [`DecodeGate`] — the typed `(~flags) & 1` decode/observe gate the
+//!   driver forwards to the backend method.
 //! - [`PreparedCall`] — the descrambled + length-checked view of one
 //!   call's input. Exposes the sub-packet slices via
 //!   [`PreparedCall::iter_sub_packets`] and the descrambled bytes via
@@ -85,6 +99,68 @@ use crate::{
     subpacket::SubPacketLayout,
     Error,
 };
+
+/// The backend frame-decode gate derived from `RADecode`'s `flags`
+/// argument.
+///
+/// The decode driver `cook.dll!0x1260` computes `(~flags) & 1` and
+/// forwards it to the backend frame-decode method
+/// `[backend_vtable + 0x0c]` as its decode/observe gate
+/// (`docs/audio/cook/spec/01-cook-decoder-structure.md` §5,
+/// `docs/audio/cook/validation/04-cook-stream-validation.md` §4.3):
+///
+/// - **`flags` bit 0 = 1** → forwarded gate bit `0` → [`DecodeGate::Decode`]:
+///   the backend decodes the bitstream and the PCM depends on the
+///   input bytes. A real decode of a fresh frame passes
+///   [`crate::RADECODE_FLAGS_DECODE`]` = 1`.
+/// - **`flags` bit 0 = 0** → forwarded gate bit `1` → [`DecodeGate::Observe`]:
+///   the backend emits **zeroed overlap-add output independent of the
+///   input** (the validator verified that all-`0xFF` input produces
+///   the same zero output as the real packets on this path).
+///
+/// Only bit 0 of `flags` participates in the gate (`(~flags) & 1`
+/// masks everything else away).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeGate {
+    /// `flags` bit 0 = 1 — the backend performs the bitstream decode.
+    Decode,
+    /// `flags` bit 0 = 0 — the backend emits zeroed overlap-add output
+    /// independent of the input bytes.
+    Observe,
+}
+
+impl DecodeGate {
+    /// Derive the gate from `RADecode`'s raw `flags` argument.
+    ///
+    /// Mirrors the driver's `(~flags) & 1` computation: bit 0 set →
+    /// [`DecodeGate::Decode`], bit 0 clear → [`DecodeGate::Observe`].
+    /// All other `flags` bits are ignored, exactly as the binary's
+    /// `& 1` mask ignores them.
+    pub const fn from_flags(flags: u32) -> Self {
+        if flags & 1 == 1 {
+            DecodeGate::Decode
+        } else {
+            DecodeGate::Observe
+        }
+    }
+
+    /// The gate bit value the driver forwards to the backend method
+    /// `[backend_vtable + 0x0c]` — literally `(~flags) & 1`.
+    ///
+    /// `0` for [`DecodeGate::Decode`], `1` for [`DecodeGate::Observe`]
+    /// (validation/04 §4.3).
+    pub const fn backend_gate_bit(self) -> u32 {
+        match self {
+            DecodeGate::Decode => 0,
+            DecodeGate::Observe => 1,
+        }
+    }
+
+    /// `true` when the backend would perform the real bitstream decode.
+    pub const fn is_decode(self) -> bool {
+        matches!(self, DecodeGate::Decode)
+    }
+}
 
 /// Per-call decode driver — the orchestrator above the backend
 /// frame-decode.
@@ -254,28 +330,15 @@ impl Driver {
     }
 
     /// Full-pipeline per-call decode entry point — the `RADecode`
-    /// analog (spec/01 §5).
+    /// analog (spec/01 §5) on the real-decode gate.
     ///
-    /// Orchestrates stages 1–5:
-    ///
-    /// 1. Validates the input/output lengths against the wired
-    ///    geometry + the validator-pinned per-call PCM budget.
-    /// 2. Runs the XOR descramble when [`Driver::common_mode`] is on.
-    /// 3. Computes the sub-packet split (validator pin: 5 × 93 = 465).
-    /// 4. Invokes the backend frame-decode — surfaced as
-    ///    [`Error::NotImplemented`] in this build; this is the GAP that
-    ///    later rounds close.
-    /// 5. Advances the session cursor on success (the
-    ///    [`Error::NotImplemented`] path returns before the cursor
-    ///    moves; no partial state is published on failure).
-    ///
-    /// Provided so the public decode path has a coherent entry point
-    /// even while the backend is still a GAP: external callers can
-    /// already pre-size their PCM output buffers exactly with
-    /// [`Driver::next_call_pcm_bytes`], hand the call to
-    /// `decode_call`, and treat the resulting
-    /// [`Error::NotImplemented`] as the documented signal that the
-    /// transform pipeline has not landed yet.
+    /// Equivalent to [`Driver::decode_call_with_flags`] with
+    /// `flags = `[`crate::RADECODE_FLAGS_DECODE`] (= 1, the value a
+    /// real decode of a fresh frame passes — validation/04 §4.3). On
+    /// this gate the backend bitstream decode is still a GAP, so the
+    /// call surfaces [`Error::NotImplemented`] after validating both
+    /// buffer sizes; see `decode_call_with_flags` for the full
+    /// per-stage description and the implemented observe-gate path.
     ///
     /// # Errors
     ///
@@ -287,6 +350,58 @@ impl Driver {
         packet: &[u8],
         output: &mut [u8],
         xor_key: u32,
+    ) -> Result<(), Error> {
+        self.decode_call_with_flags(packet, output, xor_key, crate::RADECODE_FLAGS_DECODE)
+    }
+
+    /// Full-pipeline per-call decode entry point with the raw
+    /// `RADecode` `flags` argument — the six-argument `RADecode`
+    /// analog (spec/01 §2 / §5).
+    ///
+    /// Orchestrates stages 1–5:
+    ///
+    /// 1. Validates the input/output lengths against the wired
+    ///    geometry + the validator-pinned per-call PCM budget.
+    /// 2. Runs the XOR descramble when [`Driver::common_mode`] is on.
+    /// 3. Computes the sub-packet split (validator pin: 5 × 93 = 465).
+    /// 4. Invokes the backend frame-decode `[backend_vtable + 0x0c]`
+    ///    with the gate bit `(~flags) & 1` ([`DecodeGate`]):
+    ///    - **[`DecodeGate::Observe`]** (`flags` bit 0 = 0) — pinned by
+    ///      `validation/04` §4.3: the backend emits **zeroed
+    ///      overlap-add output independent of the input** (verified
+    ///      against the real stream: all-`0xFF` input produces the
+    ///      same zero output as the real packets). This path is
+    ///      implemented: the output buffer is zero-filled to the
+    ///      per-call PCM budget (16-bit PCM silence) and the call
+    ///      completes.
+    ///    - **[`DecodeGate::Decode`]** (`flags` bit 0 = 1) — the real
+    ///      bitstream decode; surfaced as [`Error::NotImplemented`]
+    ///      in this build (the transform GAP later rounds close).
+    /// 5. Advances the session cursor on success. The
+    ///    [`Error::NotImplemented`] path returns before the cursor
+    ///    moves; no partial state is published on failure.
+    ///
+    /// The per-call output sizing is gate-independent: the driver
+    /// derives its buffer accounting from the wired geometry (spec/01
+    /// §5 — `div [esi+8]`, carry/budget bookkeeping at context
+    /// `+0x20`), and the gate is merely forwarded to the backend, so
+    /// the observe gate walks the same warm-up / steady-state cadence
+    /// the validator pinned (first call
+    /// [`DecodeConfig::warmup_pcm_bytes`], then
+    /// [`DecodeConfig::pcm_bytes_per_call`]).
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::CallInputLengthMismatch`] / [`Error::CallOutputLengthMismatch`]
+    ///   if the buffer sizes disagree with the wired per-call budget.
+    /// - [`Error::NotImplemented`] from the backend frame-decode step
+    ///   on the [`DecodeGate::Decode`] gate.
+    pub fn decode_call_with_flags(
+        &mut self,
+        packet: &[u8],
+        output: &mut [u8],
+        xor_key: u32,
+        flags: u32,
     ) -> Result<(), Error> {
         // Stage 1+2: validate, descramble, split.
         let _prepared = self.prepare_call(packet, xor_key)?;
@@ -300,8 +415,18 @@ impl Driver {
                 expected: expected_out,
             });
         }
-        // Stage 4: backend frame-decode — still GAP.
-        Err(Error::NotImplemented)
+        // Stage 4: backend frame-decode, gated on `(~flags) & 1`.
+        match DecodeGate::from_flags(flags) {
+            DecodeGate::Observe => {
+                // validation/04 §4.3: zeroed overlap-add output,
+                // independent of the input bytes.
+                output.fill(0);
+                // Stage 5: account for the completed call.
+                self.session.advance_one_call(packet.len(), output.len())
+            }
+            // The real bitstream decode — still GAP.
+            DecodeGate::Decode => Err(Error::NotImplemented),
+        }
     }
 }
 
@@ -549,6 +674,115 @@ mod tests {
         assert_eq!(err, Error::NotImplemented);
         // The `NotImplemented` path does NOT advance the session
         // cursor (no partial state on the GAP signal).
+        assert_eq!(d.calls_completed(), 0);
+        assert_eq!(d.total_pcm_emitted(), 0);
+    }
+
+    #[test]
+    fn decode_gate_mirrors_inverted_bit_zero() {
+        // validation/04 §4.3: the driver forwards `(~flags) & 1`. Only
+        // bit 0 participates; all other bits are masked away.
+        assert_eq!(DecodeGate::from_flags(1), DecodeGate::Decode);
+        assert_eq!(DecodeGate::from_flags(0), DecodeGate::Observe);
+        assert_eq!(DecodeGate::from_flags(3), DecodeGate::Decode);
+        assert_eq!(DecodeGate::from_flags(2), DecodeGate::Observe);
+        assert_eq!(DecodeGate::from_flags(u32::MAX), DecodeGate::Decode);
+        assert_eq!(DecodeGate::from_flags(u32::MAX - 1), DecodeGate::Observe);
+        // The forwarded gate bit is literally (~flags) & 1.
+        for flags in [0u32, 1, 2, 3, 0xFFFF_FFF0, u32::MAX] {
+            assert_eq!(
+                DecodeGate::from_flags(flags).backend_gate_bit(),
+                (!flags) & 1,
+                "gate bit for flags {flags:#x}"
+            );
+        }
+        assert!(DecodeGate::Decode.is_decode());
+        assert!(!DecodeGate::Observe.is_decode());
+        // The decode shorthand constant maps to the decode gate.
+        assert_eq!(
+            DecodeGate::from_flags(crate::RADECODE_FLAGS_DECODE),
+            DecodeGate::Decode
+        );
+    }
+
+    #[test]
+    fn observe_gate_zero_fills_and_advances() {
+        // validation/04 §4.3: flags bit 0 = 0 → the backend emits
+        // zeroed overlap-add output independent of the input, and the
+        // call completes (S_OK at the SPI level → Ok here).
+        let mut d = real_driver();
+        let packet: Vec<u8> = (0..465u32).map(|i| (i & 0xff) as u8).collect();
+        let mut out = vec![0xAAu8; 8_192];
+        d.decode_call_with_flags(&packet, &mut out, 0, 0).unwrap();
+        assert!(out.iter().all(|&b| b == 0), "observe output is zeroed");
+        // The cursor advances — the call completed.
+        assert_eq!(d.calls_completed(), 1);
+        assert_eq!(d.total_pcm_emitted(), 8_192);
+        // Steady-state call next: budget moves to 20 480.
+        let mut out2 = vec![0x55u8; 20_480];
+        d.decode_call_with_flags(&packet, &mut out2, 0, 0).unwrap();
+        assert!(out2.iter().all(|&b| b == 0));
+        assert_eq!(d.calls_completed(), 2);
+        assert_eq!(d.total_pcm_emitted(), 8_192 + 20_480);
+    }
+
+    #[test]
+    fn observe_gate_output_is_input_independent() {
+        // validation/04 §4.3 verification: all-0xFF input gives the
+        // same zero output as real packet bytes on the observe gate.
+        let mut d1 = real_driver();
+        let mut d2 = real_driver();
+        let varied: Vec<u8> = (0..465u32)
+            .map(|i| (i.wrapping_mul(31) & 0xff) as u8)
+            .collect();
+        let all_ff = vec![0xFFu8; 465];
+        let mut out1 = vec![0x11u8; 8_192];
+        let mut out2 = vec![0x22u8; 8_192];
+        d1.decode_call_with_flags(&varied, &mut out1, 0, 0).unwrap();
+        d2.decode_call_with_flags(&all_ff, &mut out2, 0, 0).unwrap();
+        assert_eq!(out1, out2, "observe output independent of input");
+    }
+
+    #[test]
+    fn observe_gate_still_validates_buffer_sizes() {
+        // Length validation precedes the gate dispatch: wrong-sized
+        // buffers produce the typed mismatch on either gate, and the
+        // cursor does not move.
+        let mut d = real_driver();
+        let short = vec![0u8; 464];
+        let mut out = vec![0u8; 8_192];
+        let err = d
+            .decode_call_with_flags(&short, &mut out, 0, 0)
+            .unwrap_err();
+        assert!(matches!(err, Error::CallInputLengthMismatch { .. }));
+
+        let packet = vec![0u8; 465];
+        let mut wrong_out = vec![0u8; 20_480]; // first call expects 8 192
+        let err = d
+            .decode_call_with_flags(&packet, &mut wrong_out, 0, 0)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            Error::CallOutputLengthMismatch {
+                got: 20_480,
+                expected: 8_192
+            }
+        );
+        assert_eq!(d.calls_completed(), 0);
+        assert_eq!(d.total_pcm_emitted(), 0);
+    }
+
+    #[test]
+    fn decode_gate_via_flags_still_surfaces_backend_gap() {
+        // decode_call_with_flags on the real-decode gate behaves
+        // exactly like decode_call: NotImplemented, no cursor motion.
+        let mut d = real_driver();
+        let packet = vec![0u8; 465];
+        let mut out = vec![0u8; 8_192];
+        let err = d
+            .decode_call_with_flags(&packet, &mut out, 0, crate::RADECODE_FLAGS_DECODE)
+            .unwrap_err();
+        assert_eq!(err, Error::NotImplemented);
         assert_eq!(d.calls_completed(), 0);
         assert_eq!(d.total_pcm_emitted(), 0);
     }
