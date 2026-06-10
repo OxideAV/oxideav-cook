@@ -8,6 +8,37 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `scale` module — typed exponent-indexed accessors for the two
+  back-to-back 127-entry f32 scale ladders at `cook.dll!0x91fc`
+  (`2^k`) and `cook.dll!0x93f8` (`2^(k/2)`), both spanning
+  `k = -63..+63` (`docs/audio/cook/tables/pow2-exponent-table.meta` /
+  `sqrt2-scale-ladder.meta`). API: `ScaleExponent::new(i8) ->
+  Result<_, Error>` (typed range guard), `ScaleExponent::new_const`
+  (panicking, const-context), `ScaleExponent::{get, table_index}`,
+  the two lookups `pow2_scale_for_exponent` /
+  `sqrt2_scale_for_exponent` over the vendored CSV slices, and the
+  named constants `SCALE_EXPONENT_MIN = -63` / `SCALE_EXPONENT_MAX =
+  63` / `SCALE_EXPONENT_BIAS = 63` (element `i ↔ k = i - 63`; element
+  63 is the shared `2^0 = 1.0` midpoint). Also pins audit point #15's
+  sub-pointer reconciliation
+  (`docs/audio/cook/provenance/03-cook-audit.md`): the Round-1
+  spec/01 §6 survey rows at `0x92d4` ("exact powers of two, 2^-9 …
+  2^19") and `0x94a8` ("0.00138, 0.00195, 0.00276, … ≈2^(n/2)
+  ladder") are **sub-pointers into** the two 127-entry ladders, not
+  separate tables — surfaced as RVA-derived constants
+  `POW2_SUBPOINTER_ELEMENT_OFFSET = (0x92d4 - 0x91fc) / 4 = 54` (first
+  exponent `-9`) and `SQRT2_SUBPOINTER_ELEMENT_OFFSET = (0x94a8 -
+  0x93f8) / 4 = 44` (first exponent `-19`), with tests pinning the
+  spec-quoted values at those ladder positions (`2^-9` and `2^19`
+  f32-exact for the pow2 row; the `0.00138 / 0.00195 / 0.00276`
+  leading triple to printed precision for the sqrt2 row). The Round-1
+  element counts (29 / 59) are recorded by the audit as superseded
+  scan-extent estimates and are deliberately not exported. The
+  exponent-producing runtime stage (which worker indexes which ladder
+  with what exponent source) remains a spec/01 §6 GAP — this module
+  wires the typed table access only.
+- `Error::ScaleExponentOutOfRange { got: i8 }` variant for
+  scale-ladder exponent rejections.
 - `bit_alloc` module — typed structural accessor for the 51-entry
   bit-allocation category-index LUT at `cook.dll!0x8c40` (audit point
   #14 in `docs/audio/cook/provenance/03-cook-audit.md`;

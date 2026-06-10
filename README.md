@@ -218,6 +218,32 @@ numeric facts tables + real-stream validation).
   *"tightened but still GAP: 2D row/column layout not statically
   unambiguous"*) is not pinned by this round; the structural lookup is
   the piece this module wires.
+- **Exponent-indexed scale-ladder accessors** —
+  [`scale`](src/scale.rs) wires the typed lookups for the two
+  back-to-back 127-entry f32 ladders (`cook.dll!0x91fc` = `2^k`,
+  `cook.dll!0x93f8` = `2^(k/2)`, both for `k = -63..+63` per
+  `tables/pow2-exponent-table.meta` / `sqrt2-scale-ladder.meta`).
+  [`ScaleExponent::new`](src/scale.rs) enforces the `-63..=63` exponent
+  range (out-of-range raises the typed
+  `Error::ScaleExponentOutOfRange { got: i8 }`), and
+  [`pow2_scale_for_exponent`](src/scale.rs) /
+  [`sqrt2_scale_for_exponent`](src/scale.rs) are the two lookups over
+  the vendored CSVs (element `i ↔ k = i - 63`,
+  `SCALE_EXPONENT_BIAS = 63` at the shared `2^0 = 1.0` midpoint). The
+  module also pins audit point #15's sub-pointer reconciliation
+  (`docs/audio/cook/provenance/03-cook-audit.md`): the Round-1
+  spec/01 §6 rows at `0x92d4` ("29 f32, 2^-9 … 2^19") and `0x94a8`
+  ("59 f32, 0.00138, 0.00195, 0.00276, …") are sub-pointers **into**
+  these ladders, surfaced as derived (RVA-subtraction) constants
+  `POW2_SUBPOINTER_ELEMENT_OFFSET = 54` /
+  `POW2_SUBPOINTER_FIRST_EXPONENT = -9` and
+  `SQRT2_SUBPOINTER_ELEMENT_OFFSET = 44` /
+  `SQRT2_SUBPOINTER_FIRST_EXPONENT = -19`; the tests pin the spec-quoted
+  values at those positions (`2^-9` / `2^19` f32-exact, and the three
+  `0.00138 / 0.00195 / 0.00276` leading values to printed precision).
+  The exponent-producing runtime stage (which worker feeds which
+  ladder) remains a spec/01 §6 GAP — only the typed table access is
+  wired.
 - **Per-category gain/quantiser parameter bundle** —
   [`category`](src/category.rs) wires the typed accessor for the three
   parallel `[cat*4 + base]` arrays the per-band quantiser worker

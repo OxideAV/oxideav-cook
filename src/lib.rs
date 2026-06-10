@@ -105,7 +105,7 @@
 //! `(bias + |sample| * step)` sentence describes its arithmetic — too
 //! narrow to wire without a band-loop pin).
 //!
-//! Round 13 (this round) adds the typed structural accessor for the
+//! Round 13 adds the typed structural accessor for the
 //! 51-entry bit-allocation category LUT (`cook.dll!0x8c40`, audit point
 //! #14): the [`bit_alloc`] module wraps the
 //! `tables::category_index_lut()` raw slice in two newtypes
@@ -138,6 +138,23 @@
 //! structurally-malformed cookie from a cookie that simply names the
 //! wrong flavor record ([`Error::CookieFlavorMismatch`]).
 //!
+//! Round 14 (this round) adds the typed exponent-indexed accessors for
+//! the two back-to-back 127-entry scale ladders (`cook.dll!0x91fc` =
+//! `2^k`, `cook.dll!0x93f8` = `2^(k/2)`, both for `k = -63..+63`): the
+//! [`scale`] module wraps the raw `tables::pow2_exponent_table()` /
+//! `tables::sqrt2_scale_ladder()` slices behind a [`ScaleExponent`]
+//! newtype enforcing the `-63..=63` exponent range (out-of-range raises
+//! the new [`Error::ScaleExponentOutOfRange`]), with
+//! [`pow2_scale_for_exponent`] / [`sqrt2_scale_for_exponent`] as the
+//! two lookups. It also pins audit point #15's sub-pointer
+//! reconciliation (`provenance/03`): the Round-1 spec/01 §6 rows at
+//! `0x92d4` ("2^-9 … 2^19") and `0x94a8` ("0.00138, 0.00195, 0.00276,
+//! …") are sub-pointers **into** these ladders at element offsets 54
+//! (first exponent −9) and 44 (first exponent −19) — both derived by
+//! RVA subtraction and exported as named constants. The
+//! exponent-producing runtime stage (which worker feeds which ladder)
+//! remains a spec/01 §6 GAP; only the typed table access is wired.
+//!
 //! The transform / entropy decode pipeline itself still lands in later
 //! rounds — [`Error::NotImplemented`] continues to gate the decode
 //! path.
@@ -151,6 +168,7 @@ pub mod descramble;
 pub mod driver;
 pub mod flavor;
 pub mod init;
+pub mod scale;
 pub mod session;
 pub mod subpacket;
 pub mod tables;
@@ -171,6 +189,12 @@ pub use flavor::{
     RA_GET_NUMBER_OF_FLAVORS_ADVERTISED, SENTINEL_FLAVOR_INDEX,
 };
 pub use init::{DecodeConfig, Descriptor, PCM_BYTES_PER_SAMPLE, RADECODE_FLAGS_DECODE};
+pub use scale::{
+    pow2_scale_for_exponent, sqrt2_scale_for_exponent, ScaleExponent,
+    POW2_SUBPOINTER_ELEMENT_OFFSET, POW2_SUBPOINTER_FIRST_EXPONENT, SCALE_EXPONENT_BIAS,
+    SCALE_EXPONENT_MAX, SCALE_EXPONENT_MIN, SQRT2_SUBPOINTER_ELEMENT_OFFSET,
+    SQRT2_SUBPOINTER_FIRST_EXPONENT,
+};
 pub use session::CallSession;
 pub use subpacket::SubPacketLayout;
 
@@ -296,6 +320,16 @@ pub enum Error {
         /// The supplied axis position.
         got: u8,
     },
+    /// A scale-ladder exponent was outside the
+    /// `[crate::SCALE_EXPONENT_MIN]..=[crate::SCALE_EXPONENT_MAX]`
+    /// (= `-63..=63`) range the two 127-entry ladders at
+    /// `cook.dll!0x91fc` / `0x93f8` cover
+    /// (`docs/audio/cook/tables/pow2-exponent-table.meta` /
+    /// `sqrt2-scale-ladder.meta`: *"k = -63..+63"*).
+    ScaleExponentOutOfRange {
+        /// The supplied exponent.
+        got: i8,
+    },
     /// Cookie `[0xc..0xd]` channels field declared a value outside the
     /// `{1, 2}` set spec/02 §1 pins for every well-formed flavor record
     /// (line 33: *"channels: **1** or **2**"*; line 50: *"channels in
@@ -415,6 +449,12 @@ impl core::fmt::Display for Error {
                 "oxideav-cook: bit-allocation axis position {got} is out of range \
                  (max is {})",
                 MAX_BIT_ALLOC_AXIS_POSITION
+            ),
+            Error::ScaleExponentOutOfRange { got } => write!(
+                f,
+                "oxideav-cook: scale-ladder exponent {got} is out of range \
+                 ({}..={})",
+                SCALE_EXPONENT_MIN, SCALE_EXPONENT_MAX
             ),
             Error::CookieInvalidChannels { got } => write!(
                 f,
