@@ -277,6 +277,29 @@ numeric facts tables + real-stream validation).
   `tests/descramble_realstream.rs`. The trailing partial word
   (`len % 4 != 0`) is copied verbatim — a recorded tail-handling
   DOCS-GAP.
+- **Typed MDCT half-window accessors** — [`mdct`](src/mdct.rs) keys
+  the five vendored Princen-Bradley half-windows (`cook.dll!0x8d0c`,
+  lengths 3 / 7 / 15 / 31 / 64 — the windowing / overlap-add side of
+  the inverse-MDCT stage spec/01 §5.1 inventories) behind the typed
+  [`MdctWindowLength`](src/mdct.rs) selector: only the five stored
+  lengths are constructible ([`MdctWindowLength::from_len`](src/mdct.rs)
+  raises the typed `Error::MdctWindowLengthUnsupported` otherwise), and
+  [`mdct_half_window`](src/mdct.rs) is the length-keyed lookup over the
+  vendored rows. Per-row positioning is derived, never retyped:
+  [`element_offset`](src/mdct.rs) sums the preceding row lengths
+  (row starts 0 / 3 / 10 / 25 / 56) and [`rva`](src/mdct.rs) is pure
+  RVA arithmetic from the `.meta` table head, with the audit-#14
+  boundary facts (`docs/audio/cook/provenance/03-cook-audit.md`:
+  *"cat-lut ends exactly at window table `0x8d0c`; windows end at
+  `0x8eec`"*) pinned by tests through the derived
+  [`MDCT_WINDOW_TABLE_END_RVA`](src/mdct.rs) constant.
+  [`tdac_pinned`](src/mdct.rs) reports exactly which rows the `.meta`
+  validation note covers with the Princen-Bradley TDAC identity
+  (3 / 7 / 15 / 31 — the 64-row is not covered by that sentence and
+  deliberately reports `false`). The long/short adaptive switching
+  that selects a window at runtime and the inverse-MDCT kernel itself
+  (the `0xa1b0` rotation table, audit #16: no validated closed form)
+  remain GAPs — only the typed window-table access is wired.
 - **`RADecode` flags decode/observe gate** — [`DecodeGate`](src/driver.rs)
   types the `(~flags) & 1` computation the decode driver
   `cook.dll!0x1260` forwards to the backend frame-decode method

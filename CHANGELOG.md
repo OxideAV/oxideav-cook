@@ -8,6 +8,33 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `mdct` module — typed accessors for the five vendored
+  Princen-Bradley MDCT half-windows at `cook.dll!0x8d0c` (lengths
+  3 / 7 / 15 / 31 / 64; `docs/audio/cook/tables/mdct-windows.meta`,
+  the `tables/README.md` row-structure note, and audit point #14 in
+  `docs/audio/cook/provenance/03-cook-audit.md`). API:
+  `MdctWindowLength` (enum over exactly the five stored lengths, with
+  `from_len(usize) -> Result<_, Error>` as the fallible constructor,
+  `ALL`, `row_index`, `window_len`, the derived `element_offset` /
+  `rva` row positioning, and `tdac_pinned`), `mdct_half_window
+  (MdctWindowLength) -> &'static [f32]` as the length-keyed lookup,
+  and the constants `MDCT_WINDOW_COUNT = 5`, `MDCT_WINDOW_TABLE_RVA =
+  0x8d0c`, `MDCT_WINDOW_TABLE_END_RVA` (derived `0x8d0c + 120 × 4 =
+  0x8eec` — the audit-#14 re-verified end boundary). Unit tests pin
+  the `.meta` invariants through the typed API (monotone-decreasing
+  rows, `1/sqrt2` at each midpoint, the Princen-Bradley TDAC identity
+  for exactly the four rows the `.meta` covers) plus both audit-#14
+  boundary facts (the 51-entry category LUT at `0x8c40` ends exactly
+  at the window-table head; the windows end at `0x8eec`).
+  `tdac_pinned` deliberately reports `false` for the 64-row — the
+  `.meta` validation sentence covers only lengths 3/7/15/31, and the
+  typed API asserts only what the trace pins. The long/short adaptive
+  window switching (spec/01 §5.1) and the inverse-MDCT kernel (the
+  `0xa1b0` rotation table — audit #16: no validated closed form)
+  remain GAPs; only the typed window-table access is wired.
+- `Error::MdctWindowLengthUnsupported { got: usize }` variant for
+  window-length rejections.
+
 - `DecodeGate` — typed `(~flags) & 1` decode/observe gate the decode
   driver `cook.dll!0x1260` forwards to the backend frame-decode method
   `[backend_vtable + 0x0c]`
