@@ -174,7 +174,7 @@
 //! [`Driver::decode_call`] is now the
 //! `flags = `[`RADECODE_FLAGS_DECODE`] shorthand.
 //!
-//! Round 16 (this round) wires the typed accessor for the
+//! Round 16 wires the typed accessor for the
 //! windowing / overlap-add side of the inverse-MDCT stage: the
 //! [`mdct`] module keys the five vendored Princen-Bradley half-windows
 //! (`cook.dll!0x8d0c`, lengths 3 / 7 / 15 / 31 / 64) behind a typed
@@ -190,6 +190,24 @@
 //! closed form) remain GAPs — only the typed window-table access is
 //! wired.
 //!
+//! Round 17 (this round) wires the typed accessor for the last
+//! vendored DSP table without one: the 11-entry reciprocal
+//! averaging-divisor table (`cook.dll!0xa7a8`,
+//! `tables/reciprocal-1-over-n.meta`; spec/01 §6 row `0xa7a8`; audit
+//! #15's count correction 14 → 11). The [`reciprocal`] module types
+//! the table's three structural regions — the consecutive `1/n` run
+//! for denominators `1..=9` behind the [`ReciprocalDenominator`]
+//! newtype ([`reciprocal_for_denominator`]), the stored `1/20` at
+//! element 9 behind its own named accessor
+//! ([`reciprocal_one_twentieth`] — its denominator is not adjacent to
+//! the run), and the stored trailing `0.0` at element 10 (pinned by
+//! constant + test). Out-of-run denominators raise the typed
+//! [`Error::ReciprocalDenominatorOutOfRange`]. With this, **every**
+//! extracted numeric table in `docs/audio/cook/tables/` is reachable
+//! through a typed, range-guarded API; the table's runtime consumer
+//! (which worker averages / normalises with it) is not pinned by
+//! spec/01 — a recorded GAP, like the frame bitstream syntax itself.
+//!
 //! The transform / entropy decode pipeline itself still lands in later
 //! rounds — [`Error::NotImplemented`] continues to gate the
 //! real-decode path.
@@ -204,6 +222,7 @@ pub mod driver;
 pub mod flavor;
 pub mod init;
 pub mod mdct;
+pub mod reciprocal;
 pub mod scale;
 pub mod session;
 pub mod subpacket;
@@ -228,6 +247,12 @@ pub use init::{DecodeConfig, Descriptor, PCM_BYTES_PER_SAMPLE, RADECODE_FLAGS_DE
 pub use mdct::{
     mdct_half_window, MdctWindowLength, MDCT_WINDOW_COUNT, MDCT_WINDOW_TABLE_END_RVA,
     MDCT_WINDOW_TABLE_RVA,
+};
+pub use reciprocal::{
+    reciprocal_for_denominator, reciprocal_one_twentieth, ReciprocalDenominator,
+    RECIPROCAL_DENOMINATOR_MAX, RECIPROCAL_DENOMINATOR_MIN, RECIPROCAL_ONE_TWENTIETH_INDEX,
+    RECIPROCAL_RUN_LEN, RECIPROCAL_TABLE_END_RVA, RECIPROCAL_TABLE_RVA,
+    RECIPROCAL_TRAILING_ZERO_INDEX,
 };
 pub use scale::{
     pow2_scale_for_exponent, sqrt2_scale_for_exponent, ScaleExponent,
@@ -368,6 +393,17 @@ pub enum Error {
         /// The supplied element count.
         got: usize,
     },
+    /// A reciprocal-table denominator was outside the consecutive
+    /// `[crate::RECIPROCAL_DENOMINATOR_MIN]..=[crate::RECIPROCAL_DENOMINATOR_MAX]`
+    /// (= `1..=9`) run the 11-entry `cook.dll!0xa7a8` table stores
+    /// (`docs/audio/cook/tables/reciprocal-1-over-n.meta`: *"1/n for
+    /// n = 1..9, then 1/20 and 0"*). The stored `1/20` is reachable
+    /// through [`crate::reciprocal_one_twentieth`], not through a
+    /// denominator value.
+    ReciprocalDenominatorOutOfRange {
+        /// The supplied denominator.
+        got: u8,
+    },
     /// A scale-ladder exponent was outside the
     /// `[crate::SCALE_EXPONENT_MIN]..=[crate::SCALE_EXPONENT_MAX]`
     /// (= `-63..=63`) range the two 127-entry ladders at
@@ -502,6 +538,13 @@ impl core::fmt::Display for Error {
                 f,
                 "oxideav-cook: MDCT half-window length {got} is not one of the five stored \
                  lengths (3 / 7 / 15 / 31 / 64)"
+            ),
+            Error::ReciprocalDenominatorOutOfRange { got } => write!(
+                f,
+                "oxideav-cook: reciprocal-table denominator {got} is outside the consecutive \
+                 run ({}..={}; the stored 1/20 has its own accessor)",
+                reciprocal::RECIPROCAL_DENOMINATOR_MIN,
+                reciprocal::RECIPROCAL_DENOMINATOR_MAX
             ),
             Error::ScaleExponentOutOfRange { got } => write!(
                 f,

@@ -300,6 +300,25 @@ numeric facts tables + real-stream validation).
   that selects a window at runtime and the inverse-MDCT kernel itself
   (the `0xa1b0` rotation table, audit #16: no validated closed form)
   remain GAPs — only the typed window-table access is wired.
+- **Typed reciprocal-divisor accessors** — [`reciprocal`](src/reciprocal.rs)
+  types the 11-entry averaging-divisor table (`cook.dll!0xa7a8`,
+  `tables/reciprocal-1-over-n.meta`; spec/01 §6 row `0xa7a8`; audit
+  #15's element-count correction 14 → 11) by its three structural
+  regions: the consecutive `1/n` run for denominators `1..=9` behind
+  the [`ReciprocalDenominator`](src/reciprocal.rs) newtype
+  ([`reciprocal_for_denominator`](src/reciprocal.rs); out-of-run
+  values raise the typed `Error::ReciprocalDenominatorOutOfRange`),
+  the stored `1/20` at element 9 behind its own named accessor
+  [`reciprocal_one_twentieth`](src/reciprocal.rs) (its denominator is
+  not adjacent to the run — `new(20)` deliberately rejects), and the
+  stored trailing `0.0` at element 10 (constant + test). The table-end
+  RVA is derived (`0xa7a8 + 11 × 4 = 0xa7d4`), never retyped, and the
+  tests pin the `.meta` validation note bit-exactly (each run element
+  equals the correctly-rounded f32 `1/n`; element 9 equals `1/20`).
+  With this module every extracted numeric table in
+  `docs/audio/cook/tables/` is reachable through a typed,
+  range-guarded API; the table's runtime consumer (which backend
+  worker averages / normalises with it) is a recorded GAP.
 - **`RADecode` flags decode/observe gate** — [`DecodeGate`](src/driver.rs)
   types the `(~flags) & 1` computation the decode driver
   `cook.dll!0x1260` forwards to the backend frame-decode method
@@ -343,6 +362,11 @@ siblings and the multichannel (`0x02000000`) backend family are also
 DOCS-GAPs — typed in `CookCookie::parse` so callers can triage
 GAP-typed selectors separately from values the binary genuinely
 rejects. The numeric tables the decode path will consume are all
-vendored and validated, and the per-call orchestration that surrounds
-the transform is now wired deterministically through `Driver` — what
-remains is the algorithm itself.
+vendored, validated, **and now individually reachable through typed,
+range-guarded accessors**, and the per-call orchestration that
+surrounds the transform is wired deterministically through `Driver` —
+what remains is the algorithm itself, whose bit-level frame syntax
+(gain-control block layout, category/quant-index derivation walk, the
+VLC codebooks, the `0x8fcc` 2D bit-allocation layout, the `0xa1b0`
+rotation-table closed form) is not pinned by the staged trace and
+needs a follow-up docs round before it can land.

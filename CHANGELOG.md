@@ -8,6 +8,41 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `reciprocal` module — typed accessors for the 11-entry reciprocal
+  averaging-divisor table at `cook.dll!0xa7a8`
+  (`docs/audio/cook/tables/reciprocal-1-over-n.meta`; the spec/01 §6
+  row at `0xa7a8`: *"`1, 1/2 … 1/9, 1/20, 0`"*, *"the bytes after are
+  separate scalar FP constants"*; audit point #15 in
+  `docs/audio/cook/provenance/03-cook-audit.md`: Round-1's
+  element-count estimate of 14 corrected to **11**). The table's three
+  structural regions get typed coverage: the consecutive `1/n` run for
+  denominators `1..=9` behind the `ReciprocalDenominator` newtype
+  (`new(u8) -> Result<_, Error>` range guard, `new_const` panicking
+  const-context constructor, `get` / `table_index` with `i = n - 1`)
+  and the `reciprocal_for_denominator` lookup; the stored `1/20` at
+  element 9 behind its own named accessor `reciprocal_one_twentieth`
+  (its denominator is not adjacent to the run, so it is deliberately
+  NOT constructible as a `ReciprocalDenominator` — `new(20)` rejects);
+  and the stored trailing `0.0` at element 10, pinned by the
+  `RECIPROCAL_TRAILING_ZERO_INDEX` constant + test. Named constants:
+  `RECIPROCAL_TABLE_RVA = 0xa7a8`, `RECIPROCAL_TABLE_END_RVA` (derived
+  `0xa7a8 + 11 × 4 = 0xa7d4`, never retyped), `RECIPROCAL_RUN_LEN = 9`,
+  `RECIPROCAL_DENOMINATOR_MIN/MAX = 1/9`,
+  `RECIPROCAL_ONE_TWENTIETH_INDEX = 9`,
+  `RECIPROCAL_ONE_TWENTIETH_DENOMINATOR = 20`,
+  `RECIPROCAL_TRAILING_ZERO_INDEX = 10`. Unit tests pin the `.meta`
+  validation note end-to-end through the typed API: every run element
+  is bit-identical to the correctly-rounded f32 `1/n`, element 9 is
+  bit-identical to `1/20` (= `0.05f32`), element 10 is exactly `0.0`,
+  and the three regions tile the 11-element table. With this module,
+  **every** extracted numeric table in `docs/audio/cook/tables/` is
+  reachable through a typed, range-guarded crate API. The table's
+  runtime consumer (which backend worker averages / normalises with
+  it) is not pinned by spec/01 — a recorded GAP; only the typed table
+  access is wired.
+- `Error::ReciprocalDenominatorOutOfRange { got: u8 }` variant for
+  out-of-run denominator rejections.
+
 - `mdct` module — typed accessors for the five vendored
   Princen-Bradley MDCT half-windows at `cook.dll!0x8d0c` (lengths
   3 / 7 / 15 / 31 / 64; `docs/audio/cook/tables/mdct-windows.meta`,
