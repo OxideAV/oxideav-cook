@@ -208,6 +208,24 @@
 //! (which worker averages / normalises with it) is not pinned by
 //! spec/01 — a recorded GAP, like the frame bitstream syntax itself.
 //!
+//! Round 18 (this round) wires the first piece of per-band quantiser
+//! *arithmetic* — not just a table accessor — that the worker
+//! `cook.dll!0x69f0` computes. Two facts are pinned in the table `.meta`
+//! files beyond the parallel-table access of round 11: the per-band
+//! magnitude form `bias + |sample| * step`
+//! (`tables/gain-bias-ramp.meta`, verbatim) and the level-count clip of
+//! the per-band quantiser index (`tables/category-level-count.meta`:
+//! *"used both to size and to clip the per-band quantiser index"*). The
+//! [`quantiser`] module wires both on top of [`CategoryParameters`]:
+//! [`band_gain_magnitude`] / [`CategoryParameters::band_gain_magnitude`]
+//! evaluate `bias + |sample| * step` against one category bundle, and
+//! [`clip_quantiser_index`] / [`CategoryParameters::clip_quantiser_index`]
+//! clip a raw index to the `0..=level_count-1` range the category
+//! admits. The band loop that drives these primitives (raw-index read,
+//! sign restoration, the `0x8fcc` category-expectation combine that
+//! audit #17 leaves a GAP, and the feed into the inverse MDCT) is **not**
+//! pinned beyond these two `.meta` sentences and stays a recorded GAP.
+//!
 //! The transform / entropy decode pipeline itself still lands in later
 //! rounds — [`Error::NotImplemented`] continues to gate the
 //! real-decode path.
@@ -222,6 +240,7 @@ pub mod driver;
 pub mod flavor;
 pub mod init;
 pub mod mdct;
+pub mod quantiser;
 pub mod reciprocal;
 pub mod scale;
 pub mod session;
@@ -248,6 +267,7 @@ pub use mdct::{
     mdct_half_window, MdctWindowLength, MDCT_WINDOW_COUNT, MDCT_WINDOW_TABLE_END_RVA,
     MDCT_WINDOW_TABLE_RVA,
 };
+pub use quantiser::{band_gain_magnitude, clip_quantiser_index};
 pub use reciprocal::{
     reciprocal_for_denominator, reciprocal_one_twentieth, ReciprocalDenominator,
     RECIPROCAL_DENOMINATOR_MAX, RECIPROCAL_DENOMINATOR_MIN, RECIPROCAL_ONE_TWENTIETH_INDEX,

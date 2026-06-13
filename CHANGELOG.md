@@ -8,6 +8,32 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `quantiser` module — the first per-band quantiser *arithmetic* (not a
+  table accessor) the worker `cook.dll!0x69f0` computes. Two facts pinned
+  in the table `.meta` files beyond round 11's parallel-table access:
+  the per-band magnitude form `bias + |sample| * step`
+  (`docs/audio/cook/tables/gain-bias-ramp.meta`, verbatim: *"the worker
+  forms `(bias + |sample| * step)` per band"*) and the level-count clip
+  (`docs/audio/cook/tables/category-level-count.meta`: the
+  `{13, 9, 6, 4, 3, 2, 1}` LUT is *"used both to size and to clip the
+  per-band quantiser index"*). `band_gain_magnitude(&params, sample)`
+  and `CategoryParameters::band_gain_magnitude(sample)` evaluate
+  `gain_bias + |sample| * gain_step` against one category bundle;
+  `clip_quantiser_index(level_count, raw_index)` and
+  `CategoryParameters::clip_quantiser_index(raw_index)` clip a raw index
+  to `0..=level_count-1` (an index `>= L` clips to `L - 1`; the
+  zero-count branch keeps the helper total). Eight unit tests pin both
+  primitives: the magnitude form is `|sample|`-symmetric, collapses to
+  the category bias at `sample = 0`, and reduces to `bias + |sample|`
+  for category 3 (`gain_step == 1.0`); the clip passes through every
+  in-range index and caps at the top valid index for each category,
+  spot-checked against the `{13, …, 1}` LUT (cat 0 top index 12, cat 6
+  single-level → always 0). The band loop driving these primitives
+  (raw-index read, sign restoration, the `0x8fcc` category-expectation
+  combine that audit #17 leaves a GAP, and the feed into the inverse
+  MDCT) is not pinned beyond these two `.meta` sentences and remains a
+  recorded DOCS-GAP; only the two stated primitives are wired.
+
 - `reciprocal` module — typed accessors for the 11-entry reciprocal
   averaging-divisor table at `cook.dll!0xa7a8`
   (`docs/audio/cook/tables/reciprocal-1-over-n.meta`; the spec/01 §6

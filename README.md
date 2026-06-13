@@ -256,10 +256,34 @@ numeric facts tables + real-stream validation).
   returns the matching `gain_step` (`0x8f58`, `2^(n/2)` centred on 1.0)
   + `gain_bias` (`0x8f74`, monotone-increasing `-0.20..0.0`) +
   `level_count` (`0x8f90`, strictly-decreasing `{13, 9, 6, 4, 3, 2, 1}`)
-  triple in a single call. The per-band quantiser algorithm itself
-  (the meta's *"forms (bias + |sample| * step) per band"* sentence +
-  the band-loop driving it) remains a DOCS-GAP — this module models
-  the structural parallel-table lookup only.
+  triple in a single call. This module models the structural
+  parallel-table lookup; the two per-band *arithmetic* primitives the
+  `.meta` files pin are wired in [`quantiser`](src/quantiser.rs) (below),
+  and the band loop that drives them remains a DOCS-GAP.
+- **Per-band quantiser arithmetic** — [`quantiser`](src/quantiser.rs)
+  wires the two per-band primitives the worker `cook.dll!0x69f0`
+  computes, pinned verbatim in the table `.meta` files (the first decode
+  *arithmetic* beyond table access). The magnitude form
+  `bias + |sample| * step` — `gain-bias-ramp.meta`: *"the worker forms
+  `(bias + |sample| * step)` per band"* — is
+  [`band_gain_magnitude(&params, sample)`](src/quantiser.rs) /
+  [`CategoryParameters::band_gain_magnitude`](src/quantiser.rs),
+  evaluating `gain_bias + |sample| * gain_step` against one
+  [`CategoryParameters`](src/category.rs) bundle. The level-count clip —
+  `category-level-count.meta`: the `{13, 9, 6, 4, 3, 2, 1}` LUT is
+  *"used both to size and to clip the per-band quantiser index"* — is
+  [`clip_quantiser_index(level_count, raw_index)`](src/quantiser.rs) /
+  [`CategoryParameters::clip_quantiser_index`](src/quantiser.rs),
+  capping a raw index to `0..=level_count-1` (an index `>= L` clips to
+  `L - 1`). Eight unit tests pin both: the magnitude is `|sample|`-
+  symmetric, collapses to the category bias at `sample = 0`, and reduces
+  to `bias + |sample|` for category 3 (`gain_step == 1.0`); the clip
+  passes through every in-range index and caps at the top valid index
+  per category (cat 0 → 12, cat 6 single-level → always 0). The band
+  loop driving these (raw-index read, sign restoration, the `0x8fcc`
+  category-expectation combine that audit #17 leaves a GAP, and the feed
+  into the inverse MDCT) is not pinned beyond these two `.meta`
+  sentences and stays a recorded DOCS-GAP.
 - **Per-buffer XOR descramble** — [`descramble`](src/descramble.rs) is
   the first byte-touching stage of the `RADecode` decode driver: a
   word-wise (32-bit, little-endian) XOR pass over the input, keyed by
