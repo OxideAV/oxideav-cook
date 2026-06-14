@@ -8,6 +8,21 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `spi` module — typed model of the RealAudio codec service-provider
+  interface export surface, grounded in
+  `docs/audio/cook/spec/01-cook-decoder-structure.md` §2 and
+  `docs/audio/cook/provenance/03-cook-audit.md` audit points #1/#2/#3.
+  `SpiExport` is an exhaustive ordinal-ordered enum over the 20 named
+  exports (ordinals 1–20) with `ordinal()` / `name()` /
+  `front_end_rva()` / `notimpl_result()` / `is_decode_path()` /
+  `is_encoder()` accessors; the front-end RVAs are pinned to the spec/01
+  §2 export table (and tested to lie in the `.text` section, with the two
+  GUID stubs at `0x1210` sharing a body). The SPI `HRESULT` contract is
+  exported as named constants (`S_OK`, `E_INVALIDARG` = `0x80070057`,
+  `E_NOTIMPL` = `0x80004001`, `HR_UNRECOGNISED_SELECTOR` = `0x80040005`),
+  alongside the hardcoded flavor-count immediates (`RA_NUMBER_OF_FLAVORS`
+  = 15, `RA_NUMBER_OF_FLAVORS2` = 34) and the `RASetFlavor` context store
+  offset (`RASETFLAVOR_CONTEXT_OFFSET` = `0x28`). 14 unit tests.
 - `coupling` module — typed joint-stereo / coupling-mode classification
   of a flavor record's two leading selectors, grounded in
   `docs/audio/cook/spec/02-cook-flavor-and-extradata-layout.md` §1 and

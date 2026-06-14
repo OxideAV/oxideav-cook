@@ -18,6 +18,29 @@ numeric facts tables + real-stream validation).
 
 ## What works
 
+- **RealAudio codec SPI export surface** — [`spi`](src/spi.rs) types the
+  20 named exports (ordinals 1–20) of `cook.dll` spec/01 §2 pins, behind
+  the exhaustive ordinal-ordered [`SpiExport`](src/spi.rs) enum.
+  [`SpiExport::ordinal`](src/spi.rs) / [`name`](src/spi.rs) /
+  [`front_end_rva`](src/spi.rs) carry each export's PE-export-directory
+  triple (`cook.dll!0xaa30`, audit point #1: *"all 20 ordinal/name/RVA
+  triples match exactly"*), and the front-end RVAs are tested to lie in
+  the `.text` section (`0x1000..0x7c3c`) and to share a body for the two
+  `0x1210` GUID stubs (ordinals 8/9). [`notimpl_result`](src/spi.rs)
+  surfaces the three `E_NOTIMPL` stubs (`RAGetBackend` /
+  `RAGetDecoderBackendGUID` / `RAGetGUID`),
+  [`is_decode_path`](src/spi.rs) / [`is_encoder`](src/spi.rs) split the
+  decode SPI from the four encoder exports + DRM hook, and the SPI's
+  `HRESULT` contract is exported as named constants
+  ([`S_OK`](src/spi.rs) = 0, [`E_INVALIDARG`](src/spi.rs) = `0x80070057`
+  NULL-handle, [`E_NOTIMPL`](src/spi.rs) = `0x80004001`,
+  [`HR_UNRECOGNISED_SELECTOR`](src/spi.rs) = `0x80040005`) alongside the
+  hardcoded flavor-count immediates ([`RA_NUMBER_OF_FLAVORS`](src/spi.rs)
+  = 15, [`RA_NUMBER_OF_FLAVORS2`](src/spi.rs) = 34, audit #2) and the
+  `RASetFlavor` context store offset
+  ([`RASETFLAVOR_CONTEXT_OFFSET`](src/spi.rs) = `0x28`, audit #3). This
+  is the export-level contract a container demuxer drives the codec
+  through; the worker bodies live in the decode modules.
 - **Flavor geometry table** — [`flavor_record(index)`](src/flavor.rs)
   loads the 31 well-formed per-flavor geometry records (sample rate,
   channels, samples-per-frame, subband count, frame bytes, coupling /

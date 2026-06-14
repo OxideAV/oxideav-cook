@@ -226,6 +226,21 @@
 //! audit #17 leaves a GAP, and the feed into the inverse MDCT) is **not**
 //! pinned beyond these two `.meta` sentences and stays a recorded GAP.
 //!
+//! Round 19 (this round) types the RealAudio codec **service-provider
+//! interface** (SPI) export surface in [`spi`]: spec/01 §2 pins all 20
+//! named exports (ordinals 1–20) of `cook.dll` — their names, front-end
+//! RVAs, and roles — plus the `HRESULT` codes the front-ends return
+//! (`S_OK`, `E_INVALIDARG` on a NULL handle, the three `E_NOTIMPL`
+//! stubs, the `0x80040005` unrecognised-selector code). [`SpiExport`]
+//! is an exhaustive ordinal-ordered enum with [`SpiExport::ordinal`] /
+//! [`SpiExport::name`] / [`SpiExport::front_end_rva`] /
+//! [`SpiExport::notimpl_result`] / [`SpiExport::is_decode_path`] /
+//! [`SpiExport::is_encoder`] accessors, anchored to audit point #1
+//! (*"all 20 ordinal/name/RVA triples match exactly"*) and the flavor-
+//! count immediates of #2 / #3. This is the export-level contract a
+//! container demuxer drives the codec through; the worker bodies live in
+//! the decode modules.
+//!
 //! The transform / entropy decode pipeline itself still lands in later
 //! rounds — [`Error::NotImplemented`] continues to gate the
 //! real-decode path.
@@ -245,6 +260,7 @@ pub mod quantiser;
 pub mod reciprocal;
 pub mod scale;
 pub mod session;
+pub mod spi;
 pub mod subpacket;
 pub mod tables;
 
@@ -283,6 +299,10 @@ pub use scale::{
     SQRT2_SUBPOINTER_FIRST_EXPONENT,
 };
 pub use session::CallSession;
+pub use spi::{
+    SpiExport, E_INVALIDARG, E_NOTIMPL, HR_UNRECOGNISED_SELECTOR, RASETFLAVOR_CONTEXT_OFFSET,
+    RA_NUMBER_OF_FLAVORS, RA_NUMBER_OF_FLAVORS2, SPI_EXPORT_COUNT, S_OK,
+};
 pub use subpacket::SubPacketLayout;
 
 /// Crate-local error type. Concrete variants land as the rebuild rounds
