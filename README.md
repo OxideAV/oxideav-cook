@@ -41,6 +41,28 @@ numeric facts tables + real-stream validation).
   ([`RASETFLAVOR_CONTEXT_OFFSET`](src/spi.rs) = `0x28`, audit #3). This
   is the export-level contract a container demuxer drives the codec
   through; the worker bodies live in the decode modules.
+- **`RAGetFlavorProperty` property-ID dispatch** —
+  [`flavor_property`](src/flavor_property.rs) types the export-ordinal-10
+  worker's (`cook.dll!0x17a0`) MSVC jump table at RVA `0x1be8`
+  (spec/01 §4.2, spec/02 §1.2, audit point #13): **21 cases**
+  (property IDs 0–20), where cases **0, 4, 7** return a NUL-terminated
+  string (length computed by `strlen`) and every other case returns a
+  **32-bit integer** (fixed returned length `4`).
+  [`FlavorPropertyId::new`](src/flavor_property.rs) is the `0..=20`
+  range-checked newtype ([`MAX_FLAVOR_PROPERTY_ID`](src/flavor_property.rs)
+  = 20; out-of-range raises the new `Error::FlavorPropertyIdOutOfRange`),
+  and [`FlavorPropertyId::kind`](src/flavor_property.rs) classifies the
+  return shape into the [`FlavorPropertyKind`](src/flavor_property.rs)
+  enum (`String` → `fixed_len() == None`, the run-time `strlen`;
+  `Integer` → `fixed_len() == Some(4)` =
+  [`FLAVOR_PROPERTY_INTEGER_LEN`](src/flavor_property.rs)). The three
+  string IDs are surfaced as
+  [`STRING_PROPERTY_IDS`](src/flavor_property.rs) `= [0, 4, 7]`, and the
+  table head as [`FLAVOR_PROPERTY_JUMP_TABLE_RVA`](src/flavor_property.rs)
+  = `0x1be8`. The full property-ID → meaning enumeration and the
+  property-descriptor structure's stride / field layout remain an
+  explicit spec/01 §4.2 / spec/02 §1.2 DOCS-GAP — only the pinned
+  dispatch surface (ID range + return kind) is wired.
 - **Flavor geometry table** — [`flavor_record(index)`](src/flavor.rs)
   loads the 31 well-formed per-flavor geometry records (sample rate,
   channels, samples-per-frame, subband count, frame bytes, coupling /

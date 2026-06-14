@@ -241,6 +241,22 @@
 //! container demuxer drives the codec through; the worker bodies live in
 //! the decode modules.
 //!
+//! Round 20 (this round) types the `RAGetFlavorProperty` property-ID
+//! dispatch surface in [`flavor_property`]: spec/01 §4.2 / spec/02 §1.2
+//! pin the export-ordinal-10 worker (`cook.dll!0x17a0`) as an MSVC jump
+//! table at RVA `0x1be8` with **21 cases (property IDs 0–20)**, where
+//! cases **0, 4, 7** return a NUL-terminated string (length computed via
+//! `strlen`) and every other case returns a **32-bit integer** (fixed
+//! returned length `4`). The [`FlavorPropertyId`] newtype enforces the
+//! `0..=20` range the table bounds (out-of-range raises the typed
+//! [`Error::FlavorPropertyIdOutOfRange`]), and [`FlavorPropertyId::kind`]
+//! classifies the return shape into the [`FlavorPropertyKind`] enum,
+//! anchored to audit point #13 (*"21-entry (0–20) jump table at
+//! `0x1be8`; string props (cases 0/4/7) via strlen"*, **CONFIRMED**).
+//! The full property-ID → *meaning* enumeration and the
+//! property-descriptor structure's stride / layout remain an explicit
+//! spec/01 §4.2 / spec/02 §1.2 GAP — only the dispatch surface is wired.
+//!
 //! The transform / entropy decode pipeline itself still lands in later
 //! rounds — [`Error::NotImplemented`] continues to gate the
 //! real-decode path.
@@ -254,6 +270,7 @@ pub mod coupling;
 pub mod descramble;
 pub mod driver;
 pub mod flavor;
+pub mod flavor_property;
 pub mod init;
 pub mod mdct;
 pub mod quantiser;
@@ -279,6 +296,10 @@ pub use flavor::{
     flavor_indices_matching_cookie, flavor_record, iter_flavor_records,
     iter_playable_flavor_records, FlavorRecord, FLAVOR_COUNT, RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED,
     RA_GET_NUMBER_OF_FLAVORS_ADVERTISED, SENTINEL_FLAVOR_INDEX,
+};
+pub use flavor_property::{
+    FlavorPropertyId, FlavorPropertyKind, FLAVOR_PROPERTY_ID_COUNT, FLAVOR_PROPERTY_INTEGER_LEN,
+    FLAVOR_PROPERTY_JUMP_TABLE_RVA, MAX_FLAVOR_PROPERTY_ID, STRING_PROPERTY_IDS,
 };
 pub use init::{DecodeConfig, Descriptor, PCM_BYTES_PER_SAMPLE, RADECODE_FLAGS_DECODE};
 pub use mdct::{
@@ -504,6 +525,15 @@ pub enum Error {
     /// `channels ∈ {1, 2}`, so the product is at least `256`). Rejected
     /// as a structurally-malformed cookie.
     CookieZeroSamplesProduct,
+    /// A `RAGetFlavorProperty` property ID was outside the
+    /// `0..=[crate::MAX_FLAVOR_PROPERTY_ID]` (= `0..=20`) range the
+    /// 21-case jump table at `cook.dll!0x1be8` covers (spec/01 §4.2:
+    /// *"a 21-entry jump table (cases 0–20, table at RVA `0x1be8`)"*;
+    /// audit point #13).
+    FlavorPropertyIdOutOfRange {
+        /// The supplied property ID.
+        got: u8,
+    },
 }
 
 impl core::fmt::Display for Error {
@@ -620,6 +650,12 @@ impl core::fmt::Display for Error {
             Error::CookieZeroSamplesProduct => f.write_str(
                 "oxideav-cook: cookie [4..5] samples_per_frame × channels product is 0 \
                  (no well-formed flavor record has samples_per_frame == 0; spec/02 §1)",
+            ),
+            Error::FlavorPropertyIdOutOfRange { got } => write!(
+                f,
+                "oxideav-cook: flavor-property ID {got} is out of range \
+                 (max is {})",
+                flavor_property::MAX_FLAVOR_PROPERTY_ID
             ),
         }
     }

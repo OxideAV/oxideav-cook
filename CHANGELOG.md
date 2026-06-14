@@ -8,6 +8,23 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `flavor_property` module — typed model of the `RAGetFlavorProperty`
+  property-ID dispatch surface, grounded in
+  `docs/audio/cook/spec/01-cook-decoder-structure.md` §4.2,
+  `docs/audio/cook/spec/02-cook-flavor-and-extradata-layout.md` §1.2 and
+  `docs/audio/cook/provenance/03-cook-audit.md` audit point #13. The
+  export-ordinal-10 worker (`cook.dll!0x17a0`) dispatches `property_id`
+  through an MSVC jump table at RVA `0x1be8` with 21 cases (IDs 0–20):
+  cases 0, 4, 7 return a NUL-terminated string (length via `strlen`) and
+  every other case returns a 32-bit integer (fixed returned length 4).
+  `FlavorPropertyId` is a `0..=20`-range-checked newtype (out-of-range →
+  the new `Error::FlavorPropertyIdOutOfRange`) with `kind()` /
+  `is_string()` / `is_integer()` / `fixed_len()`, plus the
+  `FlavorPropertyKind` enum and the `FLAVOR_PROPERTY_JUMP_TABLE_RVA` /
+  `FLAVOR_PROPERTY_ID_COUNT` / `MAX_FLAVOR_PROPERTY_ID` /
+  `FLAVOR_PROPERTY_INTEGER_LEN` / `STRING_PROPERTY_IDS` constants. The
+  property-ID → meaning enumeration and the descriptor structure's
+  stride / layout remain an explicit spec GAP. 9 unit tests.
 - `spi` module — typed model of the RealAudio codec service-provider
   interface export surface, grounded in
   `docs/audio/cook/spec/01-cook-decoder-structure.md` §2 and
