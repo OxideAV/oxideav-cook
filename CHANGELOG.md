@@ -8,6 +8,26 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `coupling` module — typed joint-stereo / coupling-mode classification
+  of a flavor record's two leading selectors, grounded in
+  `docs/audio/cook/spec/02-cook-flavor-and-extradata-layout.md` §1 and
+  the extracted `tables/flavor-geometry-table.csv`. `StereoMode::from_raw`
+  classifies the `+0x04` stereo-mode field (*"0 for mono; 2–5 for the
+  stereo / surround families"*): `0` → `Mono`, `2..=5` → `Stereo(value)`,
+  with the reserved `1` and any `> 5` raising the new
+  `Error::StereoModeUnsupported`. `CouplingMode::from_raw` classifies the
+  `+0x00` coupling/region field (*"0 for the plain mono/stereo flavors;
+  small non-zero values for the coupled stereo and multichannel
+  flavors"*): `0` → `None`, any non-zero → `Coupled(value)` (total — the
+  spec admits the region family without a closed set, so the raw value
+  is preserved). `FlavorRecord::coupling_mode_class` /
+  `stereo_mode_class` and the `is_coupled` / `is_stereo` shortcuts read
+  the already-parsed record fields. Eleven unit tests cross-check every
+  vendored record and pin the table's empirical relationship (every
+  stereo-mode record is also coupled, but the converse fails — record 0
+  is coupled-mono). The per-value coupling *algorithm* remains a recorded
+  DOCS-GAP. New exports: `CouplingMode`, `StereoMode`, `STEREO_MODE_MIN`,
+  `STEREO_MODE_MAX`, `Error::StereoModeUnsupported`.
 - `quantiser` module — the first per-band quantiser *arithmetic* (not a
   table accessor) the worker `cook.dll!0x69f0` computes. Two facts pinned
   in the table `.meta` files beyond round 11's parallel-table access:

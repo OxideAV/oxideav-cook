@@ -48,6 +48,29 @@ numeric facts tables + real-stream validation).
   bound at `cook.dll!0x1640`), distinct from the table-derived
   [`FLAVOR_COUNT`](src/flavor.rs) = 31 — anchored to
   `docs/audio/cook/provenance/03-cook-audit.md` audit point #2 / #12.
+- **Joint-stereo / coupling-mode classification** —
+  [`coupling`](src/coupling.rs) turns a flavor record's two raw
+  joint-coding selectors into checked types. [`StereoMode::from_raw`](src/coupling.rs)
+  classifies the `+0x04` stereo-mode field per spec/02 §1
+  (*"0 for mono; 2–5 for the stereo / surround families"*):
+  `0` → `Mono`, `2..=5` → `Stereo(value)`, and the reserved `1` /
+  any `> 5` raise `Error::StereoModeUnsupported` (both unassigned by
+  the spec and absent from the extracted geometry table).
+  [`CouplingMode::from_raw`](src/coupling.rs) classifies the `+0x00`
+  coupling/region field (*"0 for the plain mono/stereo flavors; small
+  non-zero values for the coupled stereo and multichannel flavors"*):
+  `0` → `None`, any non-zero → `Coupled(value)` (the spec admits the
+  region family without a closed set, so the value is preserved
+  verbatim). [`FlavorRecord::coupling_mode_class`](src/flavor.rs) /
+  [`stereo_mode_class`](src/flavor.rs) and the
+  `is_coupled` / `is_stereo` shortcuts read the already-parsed record
+  fields. Tests cross-check every vendored record (e.g. record 0 is
+  coupled-mono, record 21 is coupled-stereo, the index-30 sentinel is
+  coupled `17` / stereo `5`) and pin the table's empirical relationship
+  (every stereo-mode record is coupled, but not conversely). The
+  per-value coupling **algorithm** (which DSP each `2/3/4/5` stereo
+  family and each `1/2/5/6/8/17/19` region selects) is a recorded
+  DOCS-GAP — spec pins the value ranges, not the coupling arithmetic.
 - **Extradata cookie parser** — [`CookCookie::parse`](src/cookie.rs)
   reads the big-endian per-stream extradata cookie for the extended
   (`0x01000003`) selector and cross-checks that it self-describes the

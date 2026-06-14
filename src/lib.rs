@@ -235,6 +235,7 @@
 pub mod bit_alloc;
 pub mod category;
 pub mod cookie;
+pub mod coupling;
 pub mod descramble;
 pub mod driver;
 pub mod flavor;
@@ -255,6 +256,7 @@ pub use category::{
     category_parameters, CategoryIndex, CategoryParameters, CATEGORY_COUNT, MAX_CATEGORY_INDEX,
 };
 pub use cookie::{CookCookie, SelectorFamily, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
+pub use coupling::{CouplingMode, StereoMode, STEREO_MODE_MAX, STEREO_MODE_MIN};
 pub use descramble::{descramble_packet, xor_descramble, xor_descramble_into, xor_key, CommonMode};
 pub use driver::{DecodeGate, Driver, PreparedCall};
 pub use flavor::{
@@ -413,6 +415,15 @@ pub enum Error {
         /// The supplied element count.
         got: usize,
     },
+    /// A flavor record's `+0x04` stereo-mode selector was outside the set
+    /// `docs/audio/cook/spec/02-cook-flavor-and-extradata-layout.md` §1
+    /// documents (*"0 for mono; 2–5 for the stereo / surround
+    /// families"*). The reserved value `1` and any value `> 5` are
+    /// unassigned and absent from the extracted geometry table.
+    StereoModeUnsupported {
+        /// The supplied raw stereo-mode value.
+        got: u32,
+    },
     /// A reciprocal-table denominator was outside the consecutive
     /// `[crate::RECIPROCAL_DENOMINATOR_MIN]..=[crate::RECIPROCAL_DENOMINATOR_MAX]`
     /// (= `1..=9`) run the 11-entry `cook.dll!0xa7a8` table stores
@@ -558,6 +569,11 @@ impl core::fmt::Display for Error {
                 f,
                 "oxideav-cook: MDCT half-window length {got} is not one of the five stored \
                  lengths (3 / 7 / 15 / 31 / 64)"
+            ),
+            Error::StereoModeUnsupported { got } => write!(
+                f,
+                "oxideav-cook: stereo-mode selector {got} is outside the documented set \
+                 (0 for mono; 2..=5 for the stereo / surround families; spec/02 §1)"
             ),
             Error::ReciprocalDenominatorOutOfRange { got } => write!(
                 f,
