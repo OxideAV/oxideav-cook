@@ -5,12 +5,17 @@ Pure-Rust RealAudio Cook audio codec for the
 
 ## Status
 
-**Clean-room rebuild — round 3.** This `master` branch is a fresh
+**Clean-room rebuild, in progress.** This `master` branch is a fresh
 orphan. The previous implementation was retired alongside the docs
 audit dated 2026-05-06, which found that the source-of-record trace
 document for this codec was authored with a methodology that did not
 satisfy clean-room separation. The prior history is preserved on the
 `old` branch for archival but is forbidden input for the rebuild.
+
+The structural / table / per-call-orchestration layers are wired and
+validated against a real RealAudio Cook stream; the backend frame-decode
+transform (bitstream reader, gain/quantiser, inverse MDCT, joint-stereo
+coupling) is not yet implemented (see "Not yet implemented").
 
 The rebuild draws only from the strict-isolation clean-room workspace
 under `docs/audio/cook/` (binary-derived structural spec + extracted
@@ -299,7 +304,7 @@ numeric facts tables + real-stream validation).
   the vendored CSVs (element `i ↔ k = i - 63`,
   `SCALE_EXPONENT_BIAS = 63` at the shared `2^0 = 1.0` midpoint). The
   module also pins audit point #15's sub-pointer reconciliation
-  (`docs/audio/cook/provenance/03-cook-audit.md`): the Round-1
+  (`docs/audio/cook/provenance/03-cook-audit.md`): the
   spec/01 §6 rows at `0x92d4` ("29 f32, 2^-9 … 2^19") and `0x94a8`
   ("59 f32, 0.00138, 0.00195, 0.00276, …") are sub-pointers **into**
   these ladders, surfaced as derived (RVA-subtraction) constants
