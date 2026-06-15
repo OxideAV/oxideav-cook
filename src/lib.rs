@@ -286,7 +286,8 @@ pub use bit_alloc::{
     BIT_ALLOC_CATEGORY_COUNT, MAX_BIT_ALLOC_AXIS_POSITION, MAX_BIT_ALLOC_CATEGORY,
 };
 pub use category::{
-    category_parameters, CategoryIndex, CategoryParameters, CATEGORY_COUNT, MAX_CATEGORY_INDEX,
+    category_parameters, gain_step_via_scale_ladder, CategoryIndex, CategoryParameters,
+    CATEGORY_COUNT, GAIN_STEP_CENTRE_CATEGORY, MAX_CATEGORY_INDEX,
 };
 pub use cookie::{CookCookie, SelectorFamily, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
 pub use coupling::{CouplingMode, StereoMode, STEREO_MODE_MAX, STEREO_MODE_MIN};

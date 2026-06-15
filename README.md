@@ -332,7 +332,19 @@ numeric facts tables + real-stream validation).
   triple in a single call. This module models the structural
   parallel-table lookup; the two per-band *arithmetic* primitives the
   `.meta` files pin are wired in [`quantiser`](src/quantiser.rs) (below),
-  and the band loop that drives them remains a DOCS-GAP.
+  and the band loop that drives them remains a DOCS-GAP. The module also
+  exposes the **cross-table bridge** to the shared `2^(k/2)` scale ladder:
+  [`CategoryIndex::gain_step_exponent`](src/category.rs) maps a category
+  onto the half-octave exponent `k = cat - 3` (centre
+  [`GAIN_STEP_CENTRE_CATEGORY`](src/category.rs) = 3 → `2^0 = 1.0`), and
+  [`gain_step_via_scale_ladder`](src/category.rs) resolves the step
+  through [`scale`](src/scale.rs)'s 127-entry `0x93f8` ladder instead of
+  the 7-entry `0x8f58` table. The two `.meta` files pin both as the same
+  `2^(k/2)` family (`gain-step-2pow-half.meta`: *"2^(n/2) … n = -3..+3 …
+  centred on 1.0"*; `sqrt2-scale-ladder.meta`: *"2^(k/2), k = -63..+63"*),
+  so the ladder reading reproduces the per-category-table value
+  bit-for-bit — the gain-step table is a 7-element slice of the ladder.
+  The exponent-producing runtime stage stays a spec/01 §6 DOCS-GAP.
 - **Per-band quantiser arithmetic** — [`quantiser`](src/quantiser.rs)
   wires the two per-band primitives the worker `cook.dll!0x69f0`
   computes, pinned verbatim in the table `.meta` files (the first decode

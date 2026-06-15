@@ -53,6 +53,15 @@
 //! - [`category_parameters`] — accessor returning the parameter bundle
 //!   for an in-range [`CategoryIndex`]. Cached via the existing
 //!   `OnceLock`-backed table loaders in [`crate::tables`].
+//! - [`CategoryIndex::gain_step_exponent`] + [`gain_step_via_scale_ladder`]
+//!   — the cross-table bridge tying the per-category gain index to the
+//!   shared `2^(k/2)` half-octave ladder ([`crate::scale`]). The two
+//!   `.meta` files pin the per-category step table (`0x8f58`,
+//!   *"2^(n/2) … n = -3..+3 … centred on 1.0"*) and the 127-entry ladder
+//!   (`0x93f8`, *"2^(k/2), k = -63..+63"*) as the same `2^(k/2)` family,
+//!   so category `cat` is the ladder element at exponent `k = cat - 3`
+//!   (centre [`GAIN_STEP_CENTRE_CATEGORY`] → `2^0 = 1.0`); the two
+//!   readings agree bit-for-bit.
 //!
 //! ## Wall-respect note
 //!
@@ -61,6 +70,7 @@
 //! "parallel index" structural fact is wired here.
 
 use crate::{
+    scale::{sqrt2_scale_for_exponent, ScaleExponent},
     tables::{category_level_count, gain_bias_ramp, gain_step_2pow_half},
     Error,
 };
@@ -79,6 +89,16 @@ pub const CATEGORY_COUNT: u8 = 7;
 /// `category-level-count.meta`: *"category index 7 is guarded out by
 /// the worker"*; categories above `6` are rejected before the lookup.
 pub const MAX_CATEGORY_INDEX: u8 = CATEGORY_COUNT - 1;
+
+/// Category index whose gain step is the centred `1.0` factor.
+///
+/// `gain-step-2pow-half.meta`: the 7-entry `2^(n/2)` step table is for
+/// `n = -3..+3`, *"centred on 1.0"*; with the table indexed by the
+/// category index `cat = 0..=6`, the centre `n = 0` (`2^0 = 1.0`) falls
+/// at `cat = 3`. This is the offset that maps the category axis onto the
+/// shared half-octave exponent ladder (see
+/// [`CategoryIndex::gain_step_exponent`]).
+pub const GAIN_STEP_CENTRE_CATEGORY: u8 = 3;
 
 /// Typed gain/quantiser category index — in `0..=MAX_CATEGORY_INDEX`.
 ///
@@ -126,6 +146,23 @@ impl CategoryIndex {
     pub const fn as_usize(self) -> usize {
         self.0 as usize
     }
+
+    /// The exponent this category occupies on the shared `2^(k/2)`
+    /// half-octave scale ladder ([`crate::scale::sqrt2_scale_ladder`],
+    /// `cook.dll!0x93f8`).
+    ///
+    /// The two `.meta` files pin both halves of the same `2^(k/2)`
+    /// family: `gain-step-2pow-half.meta` records the 7-entry per-category
+    /// step table as *"2^(n/2) gain-step factors, n = -3..+3 … centred on
+    /// 1.0"*, and `sqrt2-scale-ladder.meta` records the 127-entry ladder
+    /// as *"2^(k/2), k = -63..+63"*. The per-category step is therefore a
+    /// single point on that ladder at exponent `k = cat - 3` (so the
+    /// centre [`GAIN_STEP_CENTRE_CATEGORY`] maps to `k = 0`, the ladder's
+    /// `2^0 = 1.0`). Every category `0..=6` maps to `k` in `-3..=3`, well
+    /// inside the ladder's `-63..=63` range, so this never fails.
+    pub const fn gain_step_exponent(self) -> ScaleExponent {
+        ScaleExponent::new_const(self.0 as i8 - GAIN_STEP_CENTRE_CATEGORY as i8)
+    }
 }
 
 /// One category's parallel parameter bundle, exactly as the per-band
@@ -169,6 +206,25 @@ impl CategoryParameters {
 /// Convenience accessor — `CategoryParameters::for_index(index)`.
 pub fn category_parameters(index: CategoryIndex) -> CategoryParameters {
     CategoryParameters::for_index(index)
+}
+
+/// Resolve a category's gain step through the shared `2^(k/2)` scale
+/// ladder rather than the 7-entry per-category step table.
+///
+/// `gain-step-2pow-half.meta` (*"2^(n/2) … n = -3..+3 … centred on
+/// 1.0"*) and `sqrt2-scale-ladder.meta` (*"2^(k/2), k = -63..+63"*) pin
+/// the per-category step and the long ladder as the **same** `2^(k/2)`
+/// family. The per-category step at category `cat` is exactly the ladder
+/// element at exponent `k = cat - 3`
+/// ([`CategoryIndex::gain_step_exponent`]). This accessor reads that
+/// element from [`crate::scale::sqrt2_scale_ladder`]; it equals the
+/// per-category-table value [`CategoryParameters::gain_step`]
+/// **bit-for-bit** (the two `.rdata` tables store the identical f32 at
+/// the overlapping exponents — the gain-step table is a 7-element slice
+/// of the ladder), so a decode-side consumer can index either table
+/// interchangeably from a single category index.
+pub fn gain_step_via_scale_ladder(index: CategoryIndex) -> f32 {
+    sqrt2_scale_for_exponent(index.gain_step_exponent())
 }
 
 #[cfg(test)]
@@ -281,5 +337,54 @@ mod tests {
             let idx = CategoryIndex::new(cat).unwrap();
             assert_eq!(category_parameters(idx), CategoryParameters::for_index(idx));
         }
+    }
+
+    #[test]
+    fn gain_step_exponent_maps_category_to_centred_ladder_position() {
+        // `gain-step-2pow-half.meta`: n = -3..+3, centred on 1.0.
+        // With the table indexed by cat = 0..=6, the centre n = 0 falls
+        // at cat = GAIN_STEP_CENTRE_CATEGORY (= 3); every category maps
+        // to k = cat - 3, spanning -3..=3.
+        assert_eq!(GAIN_STEP_CENTRE_CATEGORY, 3);
+        let expected_k: [i8; 7] = [-3, -2, -1, 0, 1, 2, 3];
+        for cat in 0..=MAX_CATEGORY_INDEX {
+            let idx = CategoryIndex::new(cat).unwrap();
+            assert_eq!(
+                idx.gain_step_exponent().get(),
+                expected_k[cat as usize],
+                "category {cat} exponent"
+            );
+        }
+        // The centre category lands exactly on the ladder's 2^0 = 1.0.
+        let centre = CategoryIndex::new(GAIN_STEP_CENTRE_CATEGORY).unwrap();
+        assert_eq!(centre.gain_step_exponent().get(), 0);
+    }
+
+    #[test]
+    fn gain_step_via_ladder_is_bit_identical_to_per_category_table() {
+        // The two `.meta` files pin the per-category step table and the
+        // long ladder as the same 2^(k/2) family, so reading the step
+        // through the ladder at k = cat - 3 must reproduce the
+        // per-category-table value bit-for-bit.
+        for cat in 0..=MAX_CATEGORY_INDEX {
+            let idx = CategoryIndex::new(cat).unwrap();
+            let via_ladder = gain_step_via_scale_ladder(idx);
+            let via_table = CategoryParameters::for_index(idx).gain_step;
+            assert_eq!(
+                via_ladder.to_bits(),
+                via_table.to_bits(),
+                "category {cat}: ladder {via_ladder} != table {via_table}"
+            );
+        }
+    }
+
+    #[test]
+    fn gain_step_via_ladder_centre_is_unity() {
+        // Centre category resolves to 2^0 = 1.0 on the ladder.
+        let centre = CategoryIndex::new(GAIN_STEP_CENTRE_CATEGORY).unwrap();
+        assert_eq!(
+            gain_step_via_scale_ladder(centre).to_bits(),
+            1.0f32.to_bits()
+        );
     }
 }

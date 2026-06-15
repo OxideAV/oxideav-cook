@@ -8,6 +8,22 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `category` cross-table bridge — `CategoryIndex::gain_step_exponent()`
+  and the free `gain_step_via_scale_ladder()` tie the per-category gain
+  index to the shared `2^(k/2)` half-octave scale ladder. The two
+  `docs/audio/cook/tables/*.meta` files pin the 7-entry per-category step
+  table (`gain-step-2pow-half`, `0x8f58`: *"2^(n/2) … n = -3..+3 …
+  centred on 1.0"*) and the 127-entry ladder (`sqrt2-scale-ladder`,
+  `0x93f8`: *"2^(k/2), k = -63..+63"*) as the **same** `2^(k/2)` family,
+  so category `cat` is the ladder element at exponent `k = cat - 3` (the
+  new `GAIN_STEP_CENTRE_CATEGORY` = 3 maps to `2^0 = 1.0`). Resolving the
+  step through the ladder reproduces the per-category-table value
+  bit-for-bit (the gain-step table is a 7-element slice of the ladder), so
+  a decode-side consumer can index either `.rdata` table interchangeably
+  from a single category index. 3 unit tests pin the exponent mapping
+  (`-3..=3`), the centre-at-unity, and the bit-identical equivalence
+  across all 7 categories. The exponent-producing runtime stage (which
+  worker feeds which ladder) remains a spec/01 §6 DOCS-GAP.
 - `flavor_property` module — typed model of the `RAGetFlavorProperty`
   property-ID dispatch surface, grounded in
   `docs/audio/cook/spec/01-cook-decoder-structure.md` §4.2,
