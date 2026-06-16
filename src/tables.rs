@@ -37,6 +37,9 @@ const CATEGORY_LEVEL_COUNT_CSV: &str = include_str!("../tables/category-level-co
 const RECIPROCAL_CSV: &str = include_str!("../tables/reciprocal-1-over-n.csv");
 const CATEGORY_INDEX_LUT_CSV: &str = include_str!("../tables/category-index-lut.csv");
 const MDCT_WINDOWS_CSV: &str = include_str!("../tables/mdct-windows.csv");
+const CATEGORY_VECTOR_DIM_LO_CSV: &str = include_str!("../tables/category-vector-dim-lo.csv");
+const CATEGORY_VECTOR_DIM_HI_CSV: &str = include_str!("../tables/category-vector-dim-hi.csv");
+const SPECTRAL_CODEBOOK_DIMS_CSV: &str = include_str!("../tables/spectral-codebook-dims.csv");
 
 // ---- advertised lengths (Feist facts from the `.meta` files) ------
 
@@ -73,6 +76,14 @@ pub const MDCT_WINDOWS_TOTAL_LEN: usize = 120;
 
 /// Per-row lengths of the five MDCT half-windows.
 pub const MDCT_WINDOW_ROW_LENS: [usize; 5] = [3, 7, 15, 31, 64];
+
+/// `category_vector_dim_lo` length — 7 u32 (`spec/05 §2.2` /
+/// `tables/category-vector-dim-lo.meta`, `element_count: 7`).
+pub const CATEGORY_VECTOR_DIM_LEN: usize = 7;
+
+/// `spectral_codebook_dims` length — 7 u32 (`spec/05 §3.1` /
+/// `tables/spectral-codebook-dims.meta`, `element_count: 7`).
+pub const SPECTRAL_CODEBOOK_DIMS_LEN: usize = 7;
 
 // ---- helpers -------------------------------------------------------
 
@@ -191,6 +202,48 @@ pub fn category_index_lut() -> &'static [u32] {
     T.get_or_init(|| parse_u32_table_one_per_line(CATEGORY_INDEX_LUT_CSV, CATEGORY_INDEX_LUT_LEN))
 }
 
+/// Per-category spectral-vector dimension (low), `{2, 2, 2, 4, 4, 5, 5}`
+/// (`tables/category-vector-dim-lo.csv`, 7 u32).
+///
+/// Read at `[category*4 + 0x9170]` (`spec/05 §2.2`) in the category walk;
+/// indexed by gain/quantiser category (0..6). Sets the number of spectral
+/// coefficients grouped per VLC symbol on the low branch.
+pub fn category_vector_dim_lo() -> &'static [u32] {
+    static T: OnceLock<Vec<u32>> = OnceLock::new();
+    T.get_or_init(|| {
+        parse_u32_table_one_per_line(CATEGORY_VECTOR_DIM_LO_CSV, CATEGORY_VECTOR_DIM_LEN)
+    })
+}
+
+/// Per-category spectral-vector dimension (high), `{10, 10, 10, 5, 5, 4, 4}`
+/// (`tables/category-vector-dim-hi.csv`, 7 u32).
+///
+/// Read at `[category*4 + 0x918c]` (`spec/05 §2.2`), in parallel with the
+/// low-dimension table at `0x9170`; indexed by gain/quantiser category
+/// (0..6).
+pub fn category_vector_dim_hi() -> &'static [u32] {
+    static T: OnceLock<Vec<u32>> = OnceLock::new();
+    T.get_or_init(|| {
+        parse_u32_table_one_per_line(CATEGORY_VECTOR_DIM_HI_CSV, CATEGORY_VECTOR_DIM_LEN)
+    })
+}
+
+/// Spectral-VLC codebook symbol counts, `{196, 100, 49, 625, 256, 243, 32}`
+/// (`tables/spectral-codebook-dims.csv`, 7 u32).
+///
+/// One per spectral Huffman codebook (0..6). The third of three parallel
+/// arrays at `0x91a8` (value-table pointers) / `0x91c4` (length-table
+/// pointers) / `0x91e0` (these counts); the two pointer arrays are
+/// relocated into BSS and built at init, so the per-symbol code/length
+/// bytes are not in the file image (`spec/05 §3.2` GAP). Only the counts
+/// are statically pinnable.
+pub fn spectral_codebook_dims() -> &'static [u32] {
+    static T: OnceLock<Vec<u32>> = OnceLock::new();
+    T.get_or_init(|| {
+        parse_u32_table_one_per_line(SPECTRAL_CODEBOOK_DIMS_CSV, SPECTRAL_CODEBOOK_DIMS_LEN)
+    })
+}
+
 /// Five concatenated MDCT analysis/synthesis half-windows
 /// (`tables/mdct-windows.csv`).
 ///
@@ -261,6 +314,22 @@ mod tests {
         }
         let total: usize = windows.iter().map(|w| w.len()).sum();
         assert_eq!(total, MDCT_WINDOWS_TOTAL_LEN);
+        assert_eq!(category_vector_dim_lo().len(), CATEGORY_VECTOR_DIM_LEN);
+        assert_eq!(category_vector_dim_hi().len(), CATEGORY_VECTOR_DIM_LEN);
+        assert_eq!(spectral_codebook_dims().len(), SPECTRAL_CODEBOOK_DIMS_LEN);
+    }
+
+    #[test]
+    fn spectral_codebook_dims_are_specced_sequence() {
+        // spec/05 §3.1 / .meta: {196, 100, 49, 625, 256, 243, 32}.
+        assert_eq!(spectral_codebook_dims(), &[196, 100, 49, 625, 256, 243, 32]);
+    }
+
+    #[test]
+    fn category_vector_dims_are_specced_sequences() {
+        // spec/05 §2.2 / .meta: lo {2,2,2,4,4,5,5}, hi {10,10,10,5,5,4,4}.
+        assert_eq!(category_vector_dim_lo(), &[2, 2, 2, 4, 4, 5, 5]);
+        assert_eq!(category_vector_dim_hi(), &[10, 10, 10, 5, 5, 4, 4]);
     }
 
     // ----- Feist-fact value checks (anchored to .meta validation) ----

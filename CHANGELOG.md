@@ -8,6 +8,29 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `spectral` module — the statically-pinned wire-format surface of the
+  round-5 backend frame-syntax trace
+  (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §2.2 / §3.1 /
+  §4.2). Wires (a) the per-category spectral-vector dimensions via
+  `CategoryVectorDims::for_category` over the two new vendored parallel
+  tables (`0x9170` low `{2,2,2,4,4,5,5}` / `0x918c` high
+  `{10,10,10,5,5,4,4}`, indexed by category `0..=6`); (b) the seven
+  spectral Huffman codebooks behind the range-checked `SpectralCodebook`
+  newtype, `symbol_count()` reading the `0x91e0` counts
+  `{196,100,49,625,256,243,32}` (new `Error::SpectralCodebookOutOfRange`);
+  (c) the embedded-sign-bit dequant LUT `{+1.0,-1.0}` at `0xa148` as
+  `SIGN_LUT` / `sign_from_bit`; and (d) the joint-stereo §4.2 mirror-index
+  rotation closed form — `coupling_table_len` (`Ncoup = 1 <<
+  coupling_bits`), `mirror_partner_index` (`Ncoup-1-j`, self-inverse) and
+  `split_coupled_coefficient` (`(out0,out1) = c*(coef[j], coef[Ncoup-1-j])`,
+  new `Error::CouplingIndexOutOfRange` / `Error::CouplingTableEmpty`). The
+  three new tables (`category-vector-dim-lo`, `category-vector-dim-hi`,
+  `spectral-codebook-dims`) are vendored and loaded through
+  `crate::tables`. The per-symbol codebook code/length bytes (§3.2) and
+  per-coupling-width rotation coefficient values (§4.3) are runtime-built
+  in BSS and not in the file image — surfaced as RVA constants only, a
+  recorded DOCS-GAP pending a dynamic-BSS-dump Validator round. 16 + 2 new
+  tests pin the sequences and the mirror-index invariants.
 - `category` cross-table bridge — `CategoryIndex::gain_step_exponent()`
   and the free `gain_step_via_scale_ladder()` tie the per-category gain
   index to the shared `2^(k/2)` half-octave scale ladder. The two

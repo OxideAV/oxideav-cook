@@ -451,6 +451,38 @@ numeric facts tables + real-stream validation).
   the observe-gate walk completes 144/144 calls with all-zero PCM
   summing to the pinned `2 936 832`-byte total, and a real packet vs
   an all-`0xFF` packet produce byte-identical observe output.
+- **Spectral-VLC codebook geometry + joint-stereo rotation closed form** —
+  [`spectral`](src/spectral.rs) wires the statically-pinned wire-format
+  facts of the backend frame syntax (`docs/audio/cook/spec/05-cook-
+  backend-frame-syntax.md` §2.2 / §3.1 / §4.2). The per-category spectral
+  -vector dimensions are typed as
+  [`CategoryVectorDims::for_category`](src/spectral.rs) over the two new
+  parallel tables (`0x9170` low `{2,2,2,4,4,5,5}` /
+  `0x918c` high `{10,10,10,5,5,4,4}`, indexed by the `0..=6` category) —
+  the count of spectral lines grouped per VLC symbol. The seven spectral
+  Huffman codebooks are typed behind the range-checked
+  [`SpectralCodebook`](src/spectral.rs) newtype
+  ([`symbol_count`](src/spectral.rs) reads the `0x91e0` counts
+  `{196,100,49,625,256,243,32}`; out-of-range raises the new
+  `Error::SpectralCodebookOutOfRange`), and the embedded-sign-bit
+  dequant LUT `{+1.0,-1.0}` at `0xa148` is
+  [`SIGN_LUT`](src/spectral.rs) / [`sign_from_bit`](src/spectral.rs).
+  The joint-stereo §4.2 reconstruction is the pinned mirror-index closed
+  form: [`coupling_table_len`](src/spectral.rs) is `Ncoup = 1 <<
+  coupling_bits`, [`mirror_partner_index`](src/spectral.rs) is the
+  `Ncoup-1-j` partner read (self-inverse; the centre index of an
+  odd-length table is its own partner — the 45° pan point), and
+  [`split_coupled_coefficient`](src/spectral.rs) reproduces
+  `(out0, out1) = c * (coef[j], coef[Ncoup-1-j])` given a
+  caller-supplied coefficient table. The per-symbol codebook code/length
+  **bytes** (§3.2) and the per-coupling-width rotation **coefficient
+  values** (§4.3) are built in the decoder's `.data` BSS at init and are
+  not in the file image — explicit recorded GAPs surfaced as RVA
+  constants ([`SPECTRAL_CODEBOOK_VALUE_PTRS_RVA`](src/spectral.rs) /
+  [`SPECTRAL_CODEBOOK_LENGTH_PTRS_RVA`](src/spectral.rs)) but with no
+  retyped numbers, pending a dynamic-BSS-dump Validator round. 16 unit
+  tests pin the codebook counts, vector-dimension sequences, sign LUT,
+  and the mirror-index self-inverse / energy-pan invariants.
 
 ## Not yet implemented
 
@@ -473,9 +505,30 @@ GAP-typed selectors separately from values the binary genuinely
 rejects. The numeric tables the decode path will consume are all
 vendored, validated, **and now individually reachable through typed,
 range-guarded accessors**, and the per-call orchestration that
-surrounds the transform is wired deterministically through `Driver` —
-what remains is the algorithm itself, whose bit-level frame syntax
-(gain-control block layout, category/quant-index derivation walk, the
-VLC codebooks, the `0x8fcc` 2D bit-allocation layout, the `0xa1b0`
-rotation-table closed form) is not pinned by the staged trace and
-needs a follow-up docs round before it can land.
+surrounds the transform is wired deterministically through `Driver`.
+
+The round-5 backend frame-syntax trace
+(`docs/audio/cook/spec/05-cook-backend-frame-syntax.md`) pins the
+**wire-format structure** of the transform — the MSB-first bit reader
+(§0.1), the gain envelope's `read6 → count − 6` segment layout and its
+`sqrt(2)^index` gain ladder (§1), the category/quant walk and its five
+per-category tables + quantiser closed form (§2), the seven spectral
+codebook dimensions + sign/scale LUTs (§3.1), and the joint-stereo
+mirror-index rotation closed form (§4.2). The statically-pinned pieces of
+that surface — the per-category vector dimensions, the seven codebook
+symbol counts, the sign LUT, and the §4.2 mirror-index rotation — are now
+wired in [`spectral`](src/spectral.rs). **What is not yet assembled into a
+running real-decode path** is the bit-level walk that consumes them
+(the bit-reader state machine, the gain-envelope + category-walk
+sequencing, the spectral VLC descent, the iMDCT kernel) plus three
+**runtime-built-in-BSS** GAPs the trace explicitly leaves open
+(`docs/audio/cook/spec/05` §6): the per-symbol spectral codebook
+code/length **bytes** (§3.2), the per-coupling-width rotation
+**coefficient values** (§4.3), and the iMDCT `0x8fcc` / `0xa1b0`
+rotation-table 2-D layouts (carried over from spec/01 §6). Each is
+addressed through a relocated `.data` BSS pointer not present in the file
+image, so it needs a dynamic-BSS-dump Validator/Extractor round before
+the entropy + transform walk can be wired bit-exactly. Until then the
+real-decode gate stays `crate::Error::NotImplemented` (the observe
+half — gate bit `1`, zeroed overlap-add output per validation/04 §4.3 —
+is implemented).

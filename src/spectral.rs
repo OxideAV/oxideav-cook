@@ -1,0 +1,445 @@
+//! Spectral-VLC codebook geometry + joint-stereo rotation closed form.
+//!
+//! Source-of-truth: `docs/audio/cook/spec/05-cook-backend-frame-syntax.md`
+//! §2.2 (per-category spectral-vector dimensions), §3.1 (the seven spectral
+//! codebooks and their symbol counts, the sign LUT and dequant-scale
+//! triple) and §4.2 (the joint-stereo mirror-index rotation closed form),
+//! plus the matching `.meta` files
+//! `docs/audio/cook/tables/{category-vector-dim-lo,category-vector-dim-hi,
+//! spectral-codebook-dims}.meta`.
+//!
+//! ## What the trace pins (wired here)
+//!
+//! - **Per-category vector dimensions (§2.2).** Each band category
+//!   (`0..=6`) selects, by `[category*4 + base]`, two parallel `.rdata`
+//!   arrays: the *low* dimension at RVA `0x9170`
+//!   (`tables/category-vector-dim-lo.csv`, `{2, 2, 2, 4, 4, 5, 5}`) and
+//!   the *high* dimension at RVA `0x918c`
+//!   (`tables/category-vector-dim-hi.csv`, `{10, 10, 10, 5, 5, 4, 4}`).
+//!   These set how many spectral lines are grouped per VLC symbol in the
+//!   §3 dequant walk.
+//! - **Spectral codebook symbol counts (§3.1).** Seven spectral Huffman
+//!   codebooks (`0..=6`) with the static symbol counts
+//!   `{196, 100, 49, 625, 256, 243, 32}` at RVA `0x91e0`
+//!   (`tables/spectral-codebook-dims.csv`). These are the third of three
+//!   parallel arrays; the two pointer arrays (`0x91a8` value tables,
+//!   `0x91c4` length tables) are relocated into BSS and built at init, so
+//!   the per-symbol code/length bytes are **not** in the file image
+//!   (spec/05 §3.2 — a recorded GAP needing a dynamic BSS dump).
+//! - **Sign LUT (§3.1).** The dequantiser reads an embedded sign bit and
+//!   indexes the two-entry LUT `{+1.0, -1.0}` at RVA `0xa148`
+//!   ([`SIGN_LUT`]). A `0` bit selects `+1.0`, a `1` bit `-1.0` — the
+//!   trace pins the values and the embedded-sign-bit mechanism.
+//! - **Joint-stereo mirror-index rotation (§4.2).** For a coupling table
+//!   of length `Ncoup = 1 << coupling_bits`, a per-band coupling index
+//!   `j` splits the single coupled coefficient `c` into the two output
+//!   channels by the mirror-index pair
+//!   `(out0, out1) = c * (coef[j], coef[Ncoup-1-j])` — a per-band
+//!   normalised-pan rotation. [`mirror_partner_index`] is the
+//!   `Ncoup - 1 - j` partner read; the closed form is pinned, the
+//!   numeric `coef[..]` values are a GAP (built in BSS at init, §4.3).
+//!
+//! ## What stays a GAP (not wired)
+//!
+//! The per-symbol codebook **code/length bytes** (§3.2) and the
+//! per-coupling-width **rotation coefficient values** (§4.3) are built in
+//! the decoder's `.data` BSS at init and are not present in the file
+//! image; the trace records them as GAPs pending a Validator/Extractor
+//! round that dumps the populated tables. This module wires only the
+//! statically-pinned geometry (dimensions, counts, sign LUT) and the
+//! pinned index arithmetic (the mirror-index pairing), not the
+//! BSS-resident numbers or the full entropy walk.
+//!
+//! ## Wall-respect note
+//!
+//! Every fact here is anchored to spec/05 §2.2 / §3.1 / §4.2 and the
+//! three `.meta` files; no algorithmic content beyond the pinned
+//! geometry and the mirror-index closed form is wired.
+
+use crate::{
+    category::CategoryIndex,
+    tables::{category_vector_dim_hi, category_vector_dim_lo, spectral_codebook_dims},
+    Error,
+};
+
+/// Number of spectral Huffman codebooks (`spec/05 §3.1`: *"There are
+/// **seven** spectral codebooks"*; the three parallel `.rdata` arrays at
+/// `0x91a8` / `0x91c4` / `0x91e0` each have 7 entries).
+pub const SPECTRAL_CODEBOOK_COUNT: u8 = 7;
+
+/// Highest valid spectral-codebook index — `SPECTRAL_CODEBOOK_COUNT - 1`.
+pub const MAX_SPECTRAL_CODEBOOK_INDEX: u8 = SPECTRAL_CODEBOOK_COUNT - 1;
+
+/// `.rdata` base RVA of the per-category low-dimension table (`0x9170`,
+/// `spec/05 §2.2`).
+pub const CATEGORY_VECTOR_DIM_LO_RVA: u32 = 0x9170;
+
+/// `.rdata` base RVA of the per-category high-dimension table (`0x918c`,
+/// `spec/05 §2.2`).
+pub const CATEGORY_VECTOR_DIM_HI_RVA: u32 = 0x918c;
+
+/// `.rdata` base RVA of the spectral-codebook symbol-count array
+/// (`0x91e0`, `spec/05 §3.1`).
+pub const SPECTRAL_CODEBOOK_DIMS_RVA: u32 = 0x91e0;
+
+/// `.rdata` RVA of the value-table pointer array (`0x91a8`); its seven
+/// targets are relocated BSS pointers built at init — the per-symbol code
+/// bytes are a `spec/05 §3.2` GAP.
+pub const SPECTRAL_CODEBOOK_VALUE_PTRS_RVA: u32 = 0x91a8;
+
+/// `.rdata` RVA of the bit-length-table pointer array (`0x91c4`); its
+/// seven targets are relocated BSS pointers built at init — the
+/// per-symbol length bytes are a `spec/05 §3.2` GAP.
+pub const SPECTRAL_CODEBOOK_LENGTH_PTRS_RVA: u32 = 0x91c4;
+
+/// `.rdata` RVA of the two-entry spectral sign LUT (`0xa148`,
+/// `spec/05 §3.1`).
+pub const SIGN_LUT_RVA: u32 = 0xa148;
+
+/// The two-entry spectral sign LUT `{+1.0, -1.0}` at RVA `0xa148`
+/// (`spec/05 §3.1`): the dequantiser reads an embedded sign bit and
+/// indexes this LUT — bit `0` → `SIGN_LUT[0]` (`+1.0`), bit `1` →
+/// `SIGN_LUT[1]` (`-1.0`).
+pub const SIGN_LUT: [f32; 2] = [1.0, -1.0];
+
+/// Resolve an embedded sign bit to its multiplier via [`SIGN_LUT`].
+///
+/// `spec/05 §3.1`: a `0` sign bit selects `+1.0`, a `1` bit `-1.0`. Any
+/// non-zero `bit` is treated as `1` (the binary tests a single mask bit).
+#[inline]
+#[must_use]
+pub const fn sign_from_bit(bit: u32) -> f32 {
+    SIGN_LUT[(bit & 1) as usize]
+}
+
+/// The two per-category spectral-vector dimensions read at
+/// `[category*4 + base]` from the parallel `0x9170` / `0x918c` tables
+/// (`spec/05 §2.2`).
+///
+/// The dimension sets how many spectral coefficients are grouped per VLC
+/// symbol in the §3 dequant walk; the codebook with the matching symbol
+/// count is then used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CategoryVectorDims {
+    /// Low-branch vector dimension (`0x9170`, `{2, 2, 2, 4, 4, 5, 5}`).
+    pub lo: u32,
+    /// High-branch vector dimension (`0x918c`, `{10, 10, 10, 5, 5, 4, 4}`).
+    pub hi: u32,
+}
+
+impl CategoryVectorDims {
+    /// Look up the (low, high) vector dimensions for one band category.
+    ///
+    /// Each field is read at `[index * 4 + base]` from the matching
+    /// vendored table — the same parallel access `spec/05 §2.2` records
+    /// at the category-walk worker (RVA `0x44a0`). The underlying CSV
+    /// loads are `OnceLock`-cached.
+    #[must_use]
+    pub fn for_category(index: CategoryIndex) -> Self {
+        let i = index.as_usize();
+        CategoryVectorDims {
+            lo: category_vector_dim_lo()[i],
+            hi: category_vector_dim_hi()[i],
+        }
+    }
+}
+
+/// Convenience accessor — `CategoryVectorDims::for_category(index)`.
+#[must_use]
+pub fn category_vector_dims(index: CategoryIndex) -> CategoryVectorDims {
+    CategoryVectorDims::for_category(index)
+}
+
+/// Typed spectral-codebook index — in `0..=MAX_SPECTRAL_CODEBOOK_INDEX`.
+///
+/// Constructed by [`SpectralCodebook::new`], so consumers never index the
+/// symbol-count array (or the GAP value/length pointer arrays) with an
+/// out-of-range value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SpectralCodebook(u8);
+
+impl SpectralCodebook {
+    /// Build a [`SpectralCodebook`] from a raw codebook index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::SpectralCodebookOutOfRange`] when
+    /// `raw > MAX_SPECTRAL_CODEBOOK_INDEX`.
+    pub fn new(raw: u8) -> Result<Self, Error> {
+        if raw > MAX_SPECTRAL_CODEBOOK_INDEX {
+            return Err(Error::SpectralCodebookOutOfRange { got: raw });
+        }
+        Ok(SpectralCodebook(raw))
+    }
+
+    /// `const`-context constructor. Panics for out-of-range values.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `raw > MAX_SPECTRAL_CODEBOOK_INDEX`.
+    #[must_use]
+    pub const fn new_const(raw: u8) -> Self {
+        if raw > MAX_SPECTRAL_CODEBOOK_INDEX {
+            panic!("SpectralCodebook::new_const: value out of range");
+        }
+        SpectralCodebook(raw)
+    }
+
+    /// Raw codebook index as `u8`.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+
+    /// Raw codebook index as `usize` — for table lookup.
+    #[must_use]
+    pub const fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+
+    /// The number of symbols in this codebook (`spec/05 §3.1`, the
+    /// `0x91e0` counts `{196, 100, 49, 625, 256, 243, 32}`).
+    #[must_use]
+    pub fn symbol_count(self) -> u32 {
+        spectral_codebook_dims()[self.as_usize()]
+    }
+}
+
+/// Length of the per-band coupling-coefficient table for a coupling-index
+/// bit width — `Ncoup = 1 << coupling_bits` (`spec/05 §4.2`:
+/// *"`var_10 = Ncoup` is the coupling table length `(1 << coupling_bits)`"*).
+///
+/// `coupling_bits` is the per-flavor coupling-index bit width
+/// (context `+0x1c`, §4.1). The result is the number of quantised
+/// rotation angles available for one coupling band.
+#[inline]
+#[must_use]
+pub const fn coupling_table_len(coupling_bits: u32) -> u32 {
+    1u32 << coupling_bits
+}
+
+/// The mirror partner index of a coupling index `j` in a table of length
+/// `ncoup` — `Ncoup - 1 - j` (`spec/05 §4.2`).
+///
+/// Channel 0 reads `coef[j]` and channel 1 reads `coef[ncoup - 1 - j]`,
+/// the partner entry of the **same** per-coupling-width table, so the
+/// pair `(coef[j], coef[ncoup-1-j])` acts as the `(cos θ, sin θ)` of a
+/// per-band rotation: as `j` runs `0..ncoup` the energy is steered from
+/// one channel to the other.
+///
+/// # Errors
+///
+/// Returns [`Error::CouplingIndexOutOfRange`] when `j >= ncoup`, and
+/// [`Error::CouplingTableEmpty`] when `ncoup == 0` (no entries to mirror
+/// against).
+pub fn mirror_partner_index(j: u32, ncoup: u32) -> Result<u32, Error> {
+    if ncoup == 0 {
+        return Err(Error::CouplingTableEmpty);
+    }
+    if j >= ncoup {
+        return Err(Error::CouplingIndexOutOfRange { got: j, ncoup });
+    }
+    Ok(ncoup - 1 - j)
+}
+
+/// Split one coupled coefficient `c` into the two output-channel
+/// coefficients by the §4.2 mirror-index rotation, given the per-coupling
+/// -width coefficient table `coef` (length `Ncoup`).
+///
+/// Returns `(out0, out1) = (c * coef[j], c * coef[Ncoup-1-j])`. The
+/// `coef` slice is supplied by the caller because its numeric values are
+/// a `spec/05 §4.3` GAP (built in BSS at init); this function wires only
+/// the pinned index arithmetic and the multiply.
+///
+/// # Errors
+///
+/// Returns [`Error::CouplingTableEmpty`] for an empty `coef`, and
+/// [`Error::CouplingIndexOutOfRange`] when `j >= coef.len()`.
+pub fn split_coupled_coefficient(c: f32, j: u32, coef: &[f32]) -> Result<(f32, f32), Error> {
+    let ncoup = coef.len() as u32;
+    let partner = mirror_partner_index(j, ncoup)?;
+    Ok((c * coef[j as usize], c * coef[partner as usize]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::category::CATEGORY_COUNT;
+
+    #[test]
+    fn codebook_count_matches_meta() {
+        assert_eq!(SPECTRAL_CODEBOOK_COUNT, 7);
+        assert_eq!(MAX_SPECTRAL_CODEBOOK_INDEX, 6);
+        assert_eq!(
+            SPECTRAL_CODEBOOK_COUNT as usize,
+            spectral_codebook_dims().len()
+        );
+    }
+
+    #[test]
+    fn codebook_symbol_counts_match_spec() {
+        // spec/05 §3.1: {196, 100, 49, 625, 256, 243, 32}.
+        let want = [196u32, 100, 49, 625, 256, 243, 32];
+        for (i, &w) in want.iter().enumerate() {
+            let cb = SpectralCodebook::new(i as u8).unwrap();
+            assert_eq!(cb.symbol_count(), w, "codebook {i}");
+        }
+    }
+
+    #[test]
+    fn codebook_rejects_out_of_range() {
+        for raw in (MAX_SPECTRAL_CODEBOOK_INDEX + 1)..=u8::MAX {
+            assert_eq!(
+                SpectralCodebook::new(raw).unwrap_err(),
+                Error::SpectralCodebookOutOfRange { got: raw }
+            );
+            if raw == u8::MAX {
+                break;
+            }
+        }
+        // 7 is the first out-of-range value (seven codebooks 0..=6).
+        assert_eq!(
+            SpectralCodebook::new(7).unwrap_err(),
+            Error::SpectralCodebookOutOfRange { got: 7 }
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "SpectralCodebook::new_const")]
+    fn codebook_new_const_panics_out_of_range() {
+        let _ = SpectralCodebook::new_const(7);
+    }
+
+    #[test]
+    fn codebook_new_const_accepts_valid() {
+        const C0: SpectralCodebook = SpectralCodebook::new_const(0);
+        const C6: SpectralCodebook = SpectralCodebook::new_const(6);
+        assert_eq!(C0.get(), 0);
+        assert_eq!(C6.get(), 6);
+    }
+
+    #[test]
+    fn vector_dims_match_spec_per_category() {
+        // spec/05 §2.2: lo {2,2,2,4,4,5,5}, hi {10,10,10,5,5,4,4}.
+        let lo = [2u32, 2, 2, 4, 4, 5, 5];
+        let hi = [10u32, 10, 10, 5, 5, 4, 4];
+        for cat in 0..CATEGORY_COUNT {
+            let idx = CategoryIndex::new(cat).unwrap();
+            let dims = CategoryVectorDims::for_category(idx);
+            assert_eq!(dims.lo, lo[cat as usize], "lo cat {cat}");
+            assert_eq!(dims.hi, hi[cat as usize], "hi cat {cat}");
+        }
+    }
+
+    #[test]
+    fn vector_dims_module_accessor_matches_struct() {
+        for cat in 0..CATEGORY_COUNT {
+            let idx = CategoryIndex::new(cat).unwrap();
+            assert_eq!(
+                category_vector_dims(idx),
+                CategoryVectorDims::for_category(idx)
+            );
+        }
+    }
+
+    #[test]
+    fn vector_dims_are_valid_codebook_symbol_groupings() {
+        // The dimension (2..=10) is the number of lines grouped per VLC
+        // symbol; both branches stay within the documented 2..=10 range.
+        for cat in 0..CATEGORY_COUNT {
+            let dims = CategoryVectorDims::for_category(CategoryIndex::new(cat).unwrap());
+            assert!((2..=10).contains(&dims.lo), "lo {} out of 2..=10", dims.lo);
+            assert!((2..=10).contains(&dims.hi), "hi {} out of 2..=10", dims.hi);
+        }
+    }
+
+    #[test]
+    fn sign_lut_resolves_embedded_bit() {
+        assert_eq!(SIGN_LUT, [1.0, -1.0]);
+        assert_eq!(sign_from_bit(0), 1.0);
+        assert_eq!(sign_from_bit(1), -1.0);
+        // Only bit 0 matters — a single mask bit, per spec/05 §3.1.
+        assert_eq!(sign_from_bit(2), 1.0);
+        assert_eq!(sign_from_bit(3), -1.0);
+    }
+
+    #[test]
+    fn coupling_table_len_is_power_of_two() {
+        assert_eq!(coupling_table_len(0), 1);
+        assert_eq!(coupling_table_len(1), 2);
+        assert_eq!(coupling_table_len(3), 8);
+        assert_eq!(coupling_table_len(6), 64);
+    }
+
+    #[test]
+    fn mirror_index_is_self_inverse() {
+        // spec/05 §4.2: partner = Ncoup - 1 - j; mirroring twice is the
+        // identity, and the endpoints swap.
+        for ncoup in 1u32..=16 {
+            for j in 0..ncoup {
+                let p = mirror_partner_index(j, ncoup).unwrap();
+                assert!(p < ncoup);
+                assert_eq!(mirror_partner_index(p, ncoup).unwrap(), j);
+            }
+            // Endpoints swap: index 0 partners with the last entry.
+            assert_eq!(mirror_partner_index(0, ncoup).unwrap(), ncoup - 1);
+            assert_eq!(mirror_partner_index(ncoup - 1, ncoup).unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn mirror_index_centre_is_fixed_for_odd_len() {
+        // For an odd-length table the centre index is its own partner —
+        // the rotation's 45° pan point.
+        for half in 0u32..8 {
+            let ncoup = 2 * half + 1;
+            assert_eq!(mirror_partner_index(half, ncoup).unwrap(), half);
+        }
+    }
+
+    #[test]
+    fn mirror_index_rejects_bad_inputs() {
+        assert_eq!(
+            mirror_partner_index(0, 0).unwrap_err(),
+            Error::CouplingTableEmpty
+        );
+        assert_eq!(
+            mirror_partner_index(4, 4).unwrap_err(),
+            Error::CouplingIndexOutOfRange { got: 4, ncoup: 4 }
+        );
+        assert_eq!(
+            mirror_partner_index(100, 8).unwrap_err(),
+            Error::CouplingIndexOutOfRange { got: 100, ncoup: 8 }
+        );
+    }
+
+    #[test]
+    fn split_coupled_pans_energy_between_channels() {
+        // A normalised-pan coefficient pair: coef = cos/sin of a quarter
+        // turn sampled at Ncoup=3 (endpoints + centre). The mirror pair
+        // steers energy: j=0 → all into ch0, j=2 → all into ch1.
+        let coef = [1.0f32, std::f32::consts::FRAC_1_SQRT_2, 0.0];
+        let c = 2.0f32;
+        let (l0, r0) = split_coupled_coefficient(c, 0, &coef).unwrap();
+        assert_eq!(l0, 2.0); // c * coef[0]
+        assert_eq!(r0, 0.0); // c * coef[2]
+        let (l2, r2) = split_coupled_coefficient(c, 2, &coef).unwrap();
+        assert_eq!(l2, 0.0); // c * coef[2]
+        assert_eq!(r2, 2.0); // c * coef[0]
+                             // Centre index: both channels read the same partner-equal entry.
+        let (l1, r1) = split_coupled_coefficient(c, 1, &coef).unwrap();
+        assert_eq!(l1, r1, "centre index pans equally");
+    }
+
+    #[test]
+    fn split_coupled_rejects_bad_inputs() {
+        assert_eq!(
+            split_coupled_coefficient(1.0, 0, &[]).unwrap_err(),
+            Error::CouplingTableEmpty
+        );
+        assert_eq!(
+            split_coupled_coefficient(1.0, 3, &[1.0, 2.0, 3.0]).unwrap_err(),
+            Error::CouplingIndexOutOfRange { got: 3, ncoup: 3 }
+        );
+    }
+}

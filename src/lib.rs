@@ -277,6 +277,7 @@ pub mod quantiser;
 pub mod reciprocal;
 pub mod scale;
 pub mod session;
+pub mod spectral;
 pub mod spi;
 pub mod subpacket;
 pub mod tables;
@@ -321,6 +322,13 @@ pub use scale::{
     SQRT2_SUBPOINTER_FIRST_EXPONENT,
 };
 pub use session::CallSession;
+pub use spectral::{
+    category_vector_dims, coupling_table_len, mirror_partner_index, sign_from_bit,
+    split_coupled_coefficient, CategoryVectorDims, SpectralCodebook, CATEGORY_VECTOR_DIM_HI_RVA,
+    CATEGORY_VECTOR_DIM_LO_RVA, MAX_SPECTRAL_CODEBOOK_INDEX, SIGN_LUT, SIGN_LUT_RVA,
+    SPECTRAL_CODEBOOK_COUNT, SPECTRAL_CODEBOOK_DIMS_RVA, SPECTRAL_CODEBOOK_LENGTH_PTRS_RVA,
+    SPECTRAL_CODEBOOK_VALUE_PTRS_RVA,
+};
 pub use spi::{
     SpiExport, E_INVALIDARG, E_NOTIMPL, HR_UNRECOGNISED_SELECTOR, RASETFLAVOR_CONTEXT_OFFSET,
     RA_NUMBER_OF_FLAVORS, RA_NUMBER_OF_FLAVORS2, SPI_EXPORT_COUNT, S_OK,
@@ -535,6 +543,30 @@ pub enum Error {
         /// The supplied property ID.
         got: u8,
     },
+    /// A spectral-codebook index was outside the
+    /// `0..=[crate::MAX_SPECTRAL_CODEBOOK_INDEX]` (= `0..=6`) range the
+    /// seven spectral Huffman codebooks cover
+    /// (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §3.1:
+    /// *"There are **seven** spectral codebooks"*;
+    /// `tables/spectral-codebook-dims.meta`, `element_count: 7`).
+    SpectralCodebookOutOfRange {
+        /// The supplied codebook index.
+        got: u8,
+    },
+    /// A joint-stereo coupling index `j` was `>=` the coupling table
+    /// length `Ncoup` for the §4.2 mirror-index split
+    /// (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §4.2:
+    /// the partner read `coef[Ncoup - 1 - j]` requires `j < Ncoup`).
+    CouplingIndexOutOfRange {
+        /// The supplied coupling index.
+        got: u32,
+        /// The coupling table length `Ncoup = 1 << coupling_bits`.
+        ncoup: u32,
+    },
+    /// A joint-stereo coupling table had length `0`, so the §4.2
+    /// mirror-index partner `Ncoup - 1 - j` has no entry to read
+    /// (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §4.2).
+    CouplingTableEmpty,
 }
 
 impl core::fmt::Display for Error {
@@ -657,6 +689,21 @@ impl core::fmt::Display for Error {
                 "oxideav-cook: flavor-property ID {got} is out of range \
                  (max is {})",
                 flavor_property::MAX_FLAVOR_PROPERTY_ID
+            ),
+            Error::SpectralCodebookOutOfRange { got } => write!(
+                f,
+                "oxideav-cook: spectral-codebook index {got} is out of range \
+                 (max is {})",
+                spectral::MAX_SPECTRAL_CODEBOOK_INDEX
+            ),
+            Error::CouplingIndexOutOfRange { got, ncoup } => write!(
+                f,
+                "oxideav-cook: coupling index {got} is out of range \
+                 (Ncoup = {ncoup})"
+            ),
+            Error::CouplingTableEmpty => f.write_str(
+                "oxideav-cook: joint-stereo coupling table has length 0 \
+                 (no mirror-index partner to read; spec/05 §4.2)",
             ),
         }
     }

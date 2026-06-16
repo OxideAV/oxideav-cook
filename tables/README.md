@@ -19,6 +19,9 @@ workspace).
 | `reciprocal-1-over-n.csv`   | 11  | f32 | `crate::tables::reciprocal_1_over_n` |
 | `category-index-lut.csv`    | 51  | u32 | `crate::tables::category_index_lut` |
 | `mdct-windows.csv`          | 5 rows (3, 7, 15, 31, 64) | f32 | `crate::tables::mdct_windows` |
+| `category-vector-dim-lo.csv` | 7  | u32 | `crate::tables::category_vector_dim_lo` |
+| `category-vector-dim-hi.csv` | 7  | u32 | `crate::tables::category_vector_dim_hi` |
+| `spectral-codebook-dims.csv` | 7  | u32 | `crate::tables::spectral_codebook_dims` |
 
 Tables are loaded at access time via `include_str!` and parsed on
 demand; numbers are never retyped into Rust source. Per-table loaders
