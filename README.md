@@ -483,6 +483,36 @@ numeric facts tables + real-stream validation).
   retyped numbers, pending a dynamic-BSS-dump Validator round. 16 unit
   tests pin the codebook counts, vector-dimension sequences, sign LUT,
   and the mirror-index self-inverse / energy-pan invariants.
+- **MSB-first frame bit reader** — [`bitreader`](src/bitreader.rs) wires
+  the foundational primitive every backend per-frame stage reads through
+  (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §0.1,
+  `docs/audio/cook/provenance/05-cook-backend.md` evidence #1).
+  [`FrameBitReader`](src/bitreader.rs) holds the four-field reader state
+  block (`+0x479c` word pointer / `+0x47a0` bit position / `+0x47a4` bit
+  cursor / `+0x47a8` bit limit — surfaced as the named `CTX_*_OFFSET`
+  constants) and exposes the two pinned reader primitives:
+  [`read_bits(n)`](src/bitreader.rs) (`read-n-bits`, `cook.dll!0x3f40`)
+  assembles `n` bits MSB-first across the word boundary by the pinned
+  closed form `word << pos | next >> (32 - pos)` then `>> (32 - n)`, and
+  [`read_bit`](src/bitreader.rs) / [`read_flag`](src/bitreader.rs)
+  (`read-1-bit`, `cook.dll!0x3fc0`) return the next single bit as an
+  unsigned `0`/`1` and as the binary's arithmetic-shifted `0`/`-1` signed
+  flag respectively. Reads at or past the bit limit (`+0x47a8`, the frame
+  size in bits) return `0` and clamp the cursor at the limit, exactly the
+  binary's *"reads past it return 0"* end-of-frame behaviour;
+  [`with_bit_limit`](src/bitreader.rs) sets an explicit frame bit limit
+  and [`new`](src/bitreader.rs) defaults it to the full byte length. The
+  input byte slice is viewed as a sequence of big-endian 32-bit words
+  ([`word_index`](src/bitreader.rs) / [`bit_position`](src/bitreader.rs)
+  decompose the running cursor the same way the binary maintains it
+  incrementally). 13 unit tests pin MSB-first extraction, the cross-word
+  straddle, the limit clamp, single-bit/multi-bit composition, and
+  cursor/word/position lockstep. Only the reader primitives are wired;
+  the frame body that drives them — the gain envelope (§1), the
+  category/quant walk (§2), the spectral VLC descent (§3, the bit-by-bit
+  walk `cook.dll!0x3a50` over the BSS-built codebooks of §3.2) and the
+  inverse transform (§5) — and the runtime-built BSS codebook / coupling
+  tables (§3.2 / §4.3) remain recorded DOCS-GAPs.
 
 ## Not yet implemented
 

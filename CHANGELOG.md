@@ -8,6 +8,25 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `bitreader` module — the MSB-first big-endian frame bit reader the
+  backend per-frame body reads through (`spec/05` §0.1, `provenance/05`
+  evidence #1). `FrameBitReader` holds the four-field reader state block
+  (`+0x479c` word pointer / `+0x47a0` bit position / `+0x47a4` bit cursor
+  / `+0x47a8` bit limit) inline and exposes the two pinned reader
+  primitives: `read_bits(n)` (`read-n-bits`, `cook.dll!0x3f40`, the
+  closed-form straddle `word << pos | next >> (32 - pos)` then
+  `>> (32 - n)`) and `read_bit` / `read_flag` (`read-1-bit`,
+  `cook.dll!0x3fc0`, unsigned `0`/`1` and the binary's arithmetic-shift
+  `0`/`-1` signed-flag form). Reads at or past the bit limit return `0`
+  and clamp the cursor at the limit, exactly the binary's end-of-frame
+  behaviour. `with_bit_limit` sets an explicit frame bit limit; `new`
+  defaults it to the full byte length. 13 unit tests pin MSB-first
+  extraction, the cross-word straddle, the limit clamp, the
+  single-bit/multi-bit composition, and the cursor/word/position
+  lockstep. Only the reader primitives are wired; the frame body that
+  drives them (gain envelope §1, category/quant walk §2, spectral VLC §3,
+  inverse transform §5) and the runtime-built BSS codebook / coupling
+  tables (§3.2 / §4.3) stay recorded GAPs.
 - `spectral` module — the statically-pinned wire-format surface of the
   round-5 backend frame-syntax trace
   (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §2.2 / §3.1 /

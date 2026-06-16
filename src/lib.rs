@@ -257,6 +257,22 @@
 //! property-descriptor structure's stride / layout remain an explicit
 //! spec/01 §4.2 / spec/02 §1.2 GAP — only the dispatch surface is wired.
 //!
+//! This round wires the foundational primitive every backend frame stage
+//! consumes: the MSB-first big-endian frame [`bitreader::FrameBitReader`]
+//! (`spec/05` §0.1, `provenance/05` evidence #1). It holds the four-field
+//! reader state block (`+0x479c` word pointer / `+0x47a0` bit position /
+//! `+0x47a4` bit cursor / `+0x47a8` bit limit) and exposes the two pinned
+//! reader primitives: [`FrameBitReader::read_bits`] (`read-n-bits`,
+//! `cook.dll!0x3f40`, the closed form `word << pos | next >> (32 - pos)`
+//! then `>> (32 - n)`) and [`FrameBitReader::read_bit`] /
+//! [`FrameBitReader::read_flag`] (`read-1-bit`, `cook.dll!0x3fc0`,
+//! unsigned `0`/`1` and the binary's arithmetic-shift `0`/`-1` flag form).
+//! Reads at or past the bit limit return `0` and clamp the cursor. Only
+//! the reader primitives are wired; the frame body that drives them (gain
+//! envelope §1, category/quant walk §2, spectral VLC §3, inverse transform
+//! §5) and the runtime-built BSS codebook / coupling tables (§3.2 / §4.3)
+//! remain recorded GAPs.
+//!
 //! The transform / entropy decode pipeline itself still lands in later
 //! rounds — [`Error::NotImplemented`] continues to gate the
 //! real-decode path.
@@ -264,6 +280,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bit_alloc;
+pub mod bitreader;
 pub mod category;
 pub mod cookie;
 pub mod coupling;
@@ -285,6 +302,10 @@ pub mod tables;
 pub use bit_alloc::{
     bit_alloc_category_for_position, BitAllocAxisPosition, BitAllocCategory, BIT_ALLOC_AXIS_LEN,
     BIT_ALLOC_CATEGORY_COUNT, MAX_BIT_ALLOC_AXIS_POSITION, MAX_BIT_ALLOC_CATEGORY,
+};
+pub use bitreader::{
+    FrameBitReader, CTX_BIT_CURSOR_OFFSET, CTX_BIT_LIMIT_OFFSET, CTX_BIT_POSITION_OFFSET,
+    CTX_WORD_POINTER_OFFSET, WORD_BITS, WORD_BYTES,
 };
 pub use category::{
     category_parameters, gain_step_via_scale_ladder, CategoryIndex, CategoryParameters,
