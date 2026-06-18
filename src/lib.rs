@@ -341,6 +341,10 @@ pub use flavor_property::{
     FlavorPropertyId, FlavorPropertyKind, FLAVOR_PROPERTY_ID_COUNT, FLAVOR_PROPERTY_INTEGER_LEN,
     FLAVOR_PROPERTY_JUMP_TABLE_RVA, MAX_FLAVOR_PROPERTY_ID, STRING_PROPERTY_IDS,
 };
+pub use gain::{
+    apply_gain_blocks, apply_gain_envelope, expand_gain_envelope, gain_factor_for_index,
+    read_segment_count, GainSegment, GAIN_POS_WINDOW, SEGMENT_COUNT_BIAS, SEGMENT_COUNT_FIELD_BITS,
+};
 pub use init::{DecodeConfig, Descriptor, PCM_BYTES_PER_SAMPLE, RADECODE_FLAGS_DECODE};
 pub use mdct::{
     mdct_half_window, MdctWindowLength, MDCT_WINDOW_COUNT, MDCT_WINDOW_TABLE_END_RVA,
@@ -622,6 +626,16 @@ pub enum Error {
         /// The raw 6-bit field value (`< 6`) that biased negative.
         raw: u32,
     },
+    /// A gain-envelope application was asked to expand over `0`
+    /// sub-blocks.
+    ///
+    /// `spec/05` §1.2: the gain profile is expanded to **one factor per
+    /// sub-block**; a sub-block count of `0` leaves no grid to map the
+    /// time-domain samples onto. The sub-block count derives from the
+    /// long/short transform-block-length state, which is always `>= 1`
+    /// for a real frame — surfaced here rather than producing an empty
+    /// profile.
+    GainBlockCountZero,
 }
 
 impl core::fmt::Display for Error {
@@ -764,6 +778,10 @@ impl core::fmt::Display for Error {
                 f,
                 "oxideav-cook: gain-envelope segment-count field {raw} biased \
                  to a negative count (field carries segment_count + 6; spec/05 §1.1)"
+            ),
+            Error::GainBlockCountZero => f.write_str(
+                "oxideav-cook: gain-envelope application asked to expand over 0 \
+                 sub-blocks (spec/05 §1.2 expands one factor per sub-block)",
             ),
         }
     }

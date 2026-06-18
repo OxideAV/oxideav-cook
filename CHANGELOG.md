@@ -8,6 +8,24 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `gain` §1.2 envelope **application** — on top of the `gain` §1.1
+  primitives, wire the post-transform piecewise-constant gain
+  application (`spec/05` §1.2): the gain profile is expanded to one
+  factor per sub-block by carrying the last segment's factor forward,
+  then multiplied into the time-domain samples. `GainSegment { position,
+  gain_index }` models a `(position, gain_index)` event;
+  `expand_gain_envelope(segments, block_count)` produces the per-sub-
+  block factor vector (unity before the first segment, hold-forward
+  from each segment's position, segments sorted by position, positions
+  past the window inert); `apply_gain_blocks(samples, blocks)` scales
+  each contiguous sub-block of the transform window by its factor (a
+  non-dividing tail rides the last factor); and
+  `apply_gain_envelope(samples, segments, block_count)` is the one-shot
+  expand+apply. A zero sub-block count surfaces the new
+  `Error::GainBlockCountZero`. Reading the segment list *off the
+  bitstream* is the §3.2-BSS-VLC-gated step that stays a recorded
+  DOCS-GAP; the §1.2 expansion + time-domain multiply, given a known
+  segment set, are wired and tested (13 new unit tests).
 - `subband` module — frame-syntax **§2.1**, the subband →
   spectral-coefficient-range geometry (`spec/05` §2.1, `provenance/05`
   evidence #4). Pins the fact that the same `0x8c40` LUT `bit_alloc`

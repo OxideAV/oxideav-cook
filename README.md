@@ -552,15 +552,23 @@ numeric facts tables + real-stream validation).
   centre (`1.0` at element 63 — the `0x94f4` positive-window sub-pointer
   of evidence #3, `(0x94f4 − 0x93f8)/4 = 63`), with the
   `{1.0, √2, 2.0, 2√2, 4.0}` positive window exposed as
-  [`GAIN_POS_WINDOW`](src/gain.rs). 10 unit tests pin the count-bias
-  endpoints (raw 6 → 0 flat, raw 63 → 57), the mid-range bias, the 6-bit
-  consume, the `< 6` / empty-frame underflow guard, the unity centre, the
-  positive-window match to f32 tolerance, the symmetric negative branch
-  (`f(-2)·f(2) == 1`) and the ladder range endpoints. The per-segment
-  *record reads* (position + gain index, via the §3.2 BSS-gated VLC walk
-  `cook.dll!0x3a50`) and the §1.2 piecewise-constant
-  interpolation/application over the transform sub-blocks stay recorded
-  DOCS-GAPs.
+  [`GAIN_POS_WINDOW`](src/gain.rs). The **§1.2 application** is also
+  wired: [`GainSegment`](src/gain.rs) models a `(position, gain_index)`
+  event, [`expand_gain_envelope`](src/gain.rs) expands a segment set into
+  one factor per sub-block by the piecewise-constant hold-forward (unity
+  before the first segment, each segment's `2^(index/2)` factor held from
+  its position to the next), and [`apply_gain_blocks`](src/gain.rs) /
+  [`apply_gain_envelope`](src/gain.rs) multiply the per-sub-block profile
+  into the time-domain samples (the characteristic Cook **post-transform**
+  time-varying gain; a zero sub-block count surfaces the new
+  `Error::GainBlockCountZero`). 23 unit tests pin the count-bias
+  endpoints, the gain-index → factor resolution, and the §1.2
+  expansion/application (flat unity default, single/multi-segment hold,
+  position sorting, past-window inertness, sub-block scaling, the
+  non-dividing tail). The per-segment *record reads* themselves (position
+  + gain index, via the §3.2 BSS-gated VLC walk `cook.dll!0x3a50`) stay a
+  recorded DOCS-GAP — the application closed form is pinned, reading the
+  segment list off the bitstream is not.
 
 ## Not yet implemented
 
