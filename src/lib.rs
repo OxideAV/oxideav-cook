@@ -284,13 +284,26 @@
 //! the §1.2 piecewise-constant interpolation/application over the
 //! transform sub-blocks both stay recorded GAPs.
 //!
-//! The remaining frame-body stages (category/quant walk §2, spectral VLC
-//! §3, inverse transform §5) and the runtime-built BSS codebook /
-//! coupling tables (§3.2 / §4.3) likewise stay recorded GAPs.
+//! The latest rounds assemble the **frame-body orchestrator**
+//! ([`frame::decode_frame_body`]): it drives the statically-pinned
+//! prefix of the §0–§3 walk — the §1.1 gain-segment count, the §2.1
+//! subband → coefficient-range geometry ([`subband::SubbandGeometry`])
+//! — and stops precisely at the §3 spectral-VLC dequant step, whose
+//! seven Huffman codebooks' code/length bytes are runtime-built in
+//! `.data` BSS at init and absent from the file image (`spec/05` §3.2,
+//! docs-gap #1775). [`Driver::decode_call`] now drives every sub-packet
+//! through that orchestrator on the real-decode gate, surfacing the
+//! typed [`Error::SpectralCodebookBytesUnavailable`] blocker rather than
+//! the opaque [`Error::NotImplemented`].
 //!
-//! The transform / entropy decode pipeline itself still lands in later
-//! rounds — [`Error::NotImplemented`] continues to gate the
-//! real-decode path.
+//! The §1.2 gain *application* (piecewise-constant hold + time-domain
+//! multiply) and the §4.2 joint-stereo mirror-index split are also wired
+//! ([`gain::apply_gain_envelope`], [`spectral::split_coupled_coefficient`])
+//! — pinned closed forms that consume the BSS-gated coefficient inputs.
+//! The runtime-built BSS codebook / coupling tables (§3.2 / §4.3) and the
+//! iMDCT kernel (§5) remain recorded GAPs the walk stops short of; the
+//! entropy + transform pipeline past the §3.2 blocker lands once a
+//! dynamic-BSS-dump Validator round provides the populated tables.
 
 #![forbid(unsafe_code)]
 
@@ -303,6 +316,7 @@ pub mod descramble;
 pub mod driver;
 pub mod flavor;
 pub mod flavor_property;
+pub mod frame;
 pub mod gain;
 pub mod init;
 pub mod mdct;
@@ -341,6 +355,7 @@ pub use flavor_property::{
     FlavorPropertyId, FlavorPropertyKind, FLAVOR_PROPERTY_ID_COUNT, FLAVOR_PROPERTY_INTEGER_LEN,
     FLAVOR_PROPERTY_JUMP_TABLE_RVA, MAX_FLAVOR_PROPERTY_ID, STRING_PROPERTY_IDS,
 };
+pub use frame::{decode_frame_body, frame_body_prefix, FrameWalk};
 pub use gain::{
     apply_gain_blocks, apply_gain_envelope, expand_gain_envelope, gain_factor_for_index,
     read_segment_count, GainSegment, GAIN_POS_WINDOW, SEGMENT_COUNT_BIAS, SEGMENT_COUNT_FIELD_BITS,
@@ -636,6 +651,19 @@ pub enum Error {
     /// for a real frame — surfaced here rather than producing an empty
     /// profile.
     GainBlockCountZero,
+    /// The backend per-frame walk reached the §3 spectral-VLC dequant
+    /// step, whose seven Huffman codebooks' per-symbol code/length bytes
+    /// are **runtime-built in `.data` BSS at init** and are not present
+    /// in the file image (`spec/05` §3.2 — docs-gap #1775).
+    ///
+    /// Distinct from [`Error::NotImplemented`]: every statically-pinned
+    /// frame-body stage before this point ran (the §1.1 gain segment
+    /// count, the §2.1 subband geometry); the walk stops precisely at
+    /// the sub-step that needs a dynamic BSS dump of the populated
+    /// codebook tables (a Validator/Extractor round), rather than
+    /// fabricating the codebook contents. The same BSS-build mechanism
+    /// gates the §4.3 per-coupling-width rotation coefficient values.
+    SpectralCodebookBytesUnavailable,
 }
 
 impl core::fmt::Display for Error {
@@ -782,6 +810,11 @@ impl core::fmt::Display for Error {
             Error::GainBlockCountZero => f.write_str(
                 "oxideav-cook: gain-envelope application asked to expand over 0 \
                  sub-blocks (spec/05 §1.2 expands one factor per sub-block)",
+            ),
+            Error::SpectralCodebookBytesUnavailable => f.write_str(
+                "oxideav-cook: backend frame walk reached the §3 spectral-VLC step; \
+                 the seven codebooks' code/length bytes are runtime-built in BSS \
+                 and not in the file image (spec/05 §3.2 — docs-gap #1775)",
             ),
         }
     }

@@ -8,6 +8,25 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `frame` module — the backend per-frame-body **orchestrator** (`spec/05`
+  §0–§3). `decode_frame_body(frame, channels, subband_count)` assembles
+  the statically-pinned prefix of the §0 stage order (gain control →
+  category/quant → spectral VLC dequant) into a single walk: it reads the
+  §1.1 gain-envelope segment count, builds the §2.1 subband →
+  coefficient-range geometry, and then stops **precisely** at the §3
+  spectral-VLC dequant step — whose seven Huffman codebooks' per-symbol
+  code/length bytes are runtime-built in `.data` BSS at init and absent
+  from the file image — surfacing the new typed
+  `Error::SpectralCodebookBytesUnavailable` (docs-gap #1775) rather than
+  guessing the codebook contents. `frame_body_prefix(...)` returns the
+  recovered `FrameWalk` state (gain count, subband geometry, total coded
+  lines, bits consumed) up to the blocker. `Driver::decode_call` /
+  `decode_call_with_flags` now drive every sub-packet through the
+  orchestrator on the real-decode gate, replacing the opaque
+  `Error::NotImplemented` with the precise §3.2 blocker. 6 new frame unit
+  tests; the driver / real-stream tests now assert the documented blocker
+  (the real first packet's gain header is well-formed — top 6 bits = 29 →
+  23 segments — so the walk reaches §3.2 on real data).
 - `gain` §1.2 envelope **application** — on top of the `gain` §1.1
   primitives, wire the post-transform piecewise-constant gain
   application (`spec/05` §1.2): the gain profile is expanded to one

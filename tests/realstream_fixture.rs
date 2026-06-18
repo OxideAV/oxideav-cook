@@ -31,9 +31,11 @@
 //!   2 936 832 bytes of PCM across all 144 `RADecode` calls —
 //!   `validation/04` §5.
 //!
-//! No decoded PCM is produced: the bitstream-decode pipeline still
-//! returns `Error::NotImplemented`. This test validates the
-//! crate's *configuration* layer end-to-end against a real bitstream.
+//! No decoded PCM is produced: the real-decode pipeline drives the
+//! frame-body walk to the documented §3.2 BSS codebook blocker
+//! (`Error::SpectralCodebookBytesUnavailable`, docs-gap #1775). This
+//! test validates the crate's *configuration* layer end-to-end against a
+//! real bitstream.
 
 use oxideav_cook::{
     flavor_record, CookCookie, DecodeConfig, Descriptor, EXTENDED_COOKIE_LEN, PCM_BYTES_PER_SAMPLE,

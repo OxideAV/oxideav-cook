@@ -170,13 +170,15 @@ impl DecodeGate {
 /// real-stream path), and an embedded [`CallSession`] tracking the
 /// per-call cadence. Built by [`Driver::new`].
 ///
-/// The driver does **not** own the backend frame-decode (the bitstream
-/// reader, MDCT, gain/quantiser are all later-round work);
-/// [`Driver::decode_call`] surfaces them as [`Error::NotImplemented`]
-/// while [`Driver::prepare_call`] gives consumers the orchestrated
-/// stage 1+2 output (descramble + sub-packet split) so they can plug a
-/// future backend implementation in without re-deriving the
-/// orchestration.
+/// The driver drives the backend frame-decode through the
+/// [`crate::frame`] orchestrator, which runs the statically-pinned
+/// frame-body prefix (§1.1 gain count, §2.1 subband geometry) and stops
+/// at the documented §3.2 BSS codebook blocker
+/// ([`Error::SpectralCodebookBytesUnavailable`], docs-gap #1775); the
+/// inverse-MDCT / coupling-coefficient stages past that blocker are
+/// later-round work. [`Driver::prepare_call`] gives consumers the
+/// orchestrated stage 1+2 output (descramble + sub-packet split)
+/// directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Driver {
     config: DecodeConfig,
@@ -335,16 +337,19 @@ impl Driver {
     /// Equivalent to [`Driver::decode_call_with_flags`] with
     /// `flags = `[`crate::RADECODE_FLAGS_DECODE`] (= 1, the value a
     /// real decode of a fresh frame passes — validation/04 §4.3). On
-    /// this gate the backend bitstream decode is still a GAP, so the
-    /// call surfaces [`Error::NotImplemented`] after validating both
-    /// buffer sizes; see `decode_call_with_flags` for the full
-    /// per-stage description and the implemented observe-gate path.
+    /// this gate the call drives each sub-packet through the
+    /// [`crate::frame`] orchestrator, which runs the statically-pinned
+    /// frame-body prefix and stops at the documented §3.2 BSS codebook
+    /// blocker ([`Error::SpectralCodebookBytesUnavailable`], docs-gap
+    /// #1775); see `decode_call_with_flags` for the full per-stage
+    /// description and the implemented observe-gate path.
     ///
     /// # Errors
     ///
     /// - [`Error::CallInputLengthMismatch`] / [`Error::CallOutputLengthMismatch`]
     ///   if the buffer sizes disagree with the wired per-call budget.
-    /// - [`Error::NotImplemented`] from the backend frame-decode step.
+    /// - [`Error::SpectralCodebookBytesUnavailable`] — the documented
+    ///   §3.2 BSS blocker the frame-body walk reaches (docs-gap #1775).
     pub fn decode_call(
         &mut self,
         packet: &[u8],
@@ -375,11 +380,16 @@ impl Driver {
     ///      per-call PCM budget (16-bit PCM silence) and the call
     ///      completes.
     ///    - **[`DecodeGate::Decode`]** (`flags` bit 0 = 1) — the real
-    ///      bitstream decode; surfaced as [`Error::NotImplemented`]
-    ///      in this build (the transform GAP later rounds close).
-    /// 5. Advances the session cursor on success. The
-    ///    [`Error::NotImplemented`] path returns before the cursor
-    ///    moves; no partial state is published on failure.
+    ///      bitstream decode; drives each sub-packet through the
+    ///      [`crate::frame`] orchestrator (§1.1 gain count + §2.1
+    ///      subband geometry run), which stops at the documented §3.2
+    ///      BSS codebook blocker
+    ///      ([`Error::SpectralCodebookBytesUnavailable`], docs-gap
+    ///      #1775) — the inverse-MDCT / coupling stages past it close in
+    ///      a later dynamic-BSS-dump round.
+    /// 5. Advances the session cursor on success. The decode-gate
+    ///    blocker path returns before the cursor moves; no partial
+    ///    state is published on failure.
     ///
     /// The per-call output sizing is gate-independent: the driver
     /// derives its buffer accounting from the wired geometry (spec/01
@@ -394,8 +404,9 @@ impl Driver {
     ///
     /// - [`Error::CallInputLengthMismatch`] / [`Error::CallOutputLengthMismatch`]
     ///   if the buffer sizes disagree with the wired per-call budget.
-    /// - [`Error::NotImplemented`] from the backend frame-decode step
-    ///   on the [`DecodeGate::Decode`] gate.
+    /// - [`Error::SpectralCodebookBytesUnavailable`] from the backend
+    ///   frame-body walk on the [`DecodeGate::Decode`] gate (docs-gap
+    ///   #1775).
     pub fn decode_call_with_flags(
         &mut self,
         packet: &[u8],
@@ -404,10 +415,10 @@ impl Driver {
         flags: u32,
     ) -> Result<(), Error> {
         // Stage 1+2: validate, descramble, split.
-        let _prepared = self.prepare_call(packet, xor_key)?;
-        // Pre-validate the output size before claiming the backend was
-        // even invoked — keeps `Error::NotImplemented` reserved for the
-        // transform itself.
+        let prepared = self.prepare_call(packet, xor_key)?;
+        // Pre-validate the output size before invoking the backend —
+        // keeps the §3.2 BSS-blocker signal reserved for the frame-body
+        // walk itself, distinct from a wrong-sized buffer.
         let expected_out = self.session.next_call_pcm_bytes() as usize;
         if output.len() != expected_out {
             return Err(Error::CallOutputLengthMismatch {
@@ -424,8 +435,29 @@ impl Driver {
                 // Stage 5: account for the completed call.
                 self.session.advance_one_call(packet.len(), output.len())
             }
-            // The real bitstream decode — still GAP.
-            DecodeGate::Decode => Err(Error::NotImplemented),
+            // The real bitstream decode — drive each sub-packet through
+            // the frame-body orchestrator (spec/05 §0–§3), which runs the
+            // statically-pinned prefix (§1.1 gain count, §2.1 subband
+            // geometry) and stops precisely at the §3.2 BSS codebook
+            // blocker (docs-gap #1775,
+            // `Error::SpectralCodebookBytesUnavailable`). Reserving that
+            // signal for the documented blocker keeps it distinct from a
+            // size mismatch and from the legacy `NotImplemented`.
+            DecodeGate::Decode => {
+                for slot in prepared.iter_sub_packets() {
+                    let frame = slot?;
+                    crate::frame::decode_frame_body(
+                        frame,
+                        self.config.channels,
+                        u32::from(self.config.subband_count),
+                    )?;
+                }
+                // Unreachable on a non-trivial stream: `decode_frame_body`
+                // returns the BSS blocker for every coded sub-packet. The
+                // explicit terminator keeps the match total if a future
+                // dynamic-BSS-dump round unblocks the walk.
+                Err(Error::SpectralCodebookBytesUnavailable)
+            }
         }
     }
 }
@@ -640,11 +672,21 @@ mod tests {
         assert_eq!(d.total_pcm_emitted(), 0);
     }
 
+    /// A 465-byte packet whose first sub-packet (93 bytes) carries a
+    /// well-formed §1.1 gain header (top 6 bits = `001000` = 8 → 2
+    /// segments), so the frame-body walk passes the gain stage and
+    /// reaches the §3.2 BSS blocker rather than the underflow guard.
+    fn packet_with_valid_gain_header() -> Vec<u8> {
+        let mut p = vec![0u8; 465];
+        p[0] = 0b0010_0000; // top 6 bits of sub-packet 0 = 8.
+        p
+    }
+
     #[test]
     fn decode_call_validates_sizing_before_signalling_backend_gap() {
         // `decode_call` validates input + output sizes before the
-        // `Error::NotImplemented` signal: a wrong-sized buffer should
-        // produce a typed length error, not the backend GAP.
+        // §3.2 BSS-blocker signal: a wrong-sized buffer should produce a
+        // typed length error, not the backend blocker.
         let mut d = real_driver();
         let packet = vec![0u8; 464];
         let mut out = vec![0u8; 8_192];
@@ -664,16 +706,17 @@ mod tests {
     }
 
     #[test]
-    fn decode_call_surfaces_backend_gap_on_wired_sizes() {
-        // With both buffer sizes wired correctly, `decode_call`
-        // surfaces the backend GAP as `Error::NotImplemented`.
+    fn decode_call_surfaces_bss_blocker_on_wired_sizes() {
+        // With both buffer sizes wired correctly and a well-formed gain
+        // header, `decode_call` drives the frame-body walk to the
+        // documented §3.2 BSS codebook blocker (docs-gap #1775).
         let mut d = real_driver();
-        let packet = vec![0u8; 465];
+        let packet = packet_with_valid_gain_header();
         let mut out = vec![0u8; 8_192];
         let err = d.decode_call(&packet, &mut out, 0).unwrap_err();
-        assert_eq!(err, Error::NotImplemented);
-        // The `NotImplemented` path does NOT advance the session
-        // cursor (no partial state on the GAP signal).
+        assert_eq!(err, Error::SpectralCodebookBytesUnavailable);
+        // The blocker path does NOT advance the session cursor (no
+        // partial state on the GAP signal).
         assert_eq!(d.calls_completed(), 0);
         assert_eq!(d.total_pcm_emitted(), 0);
     }
@@ -773,18 +816,32 @@ mod tests {
     }
 
     #[test]
-    fn decode_gate_via_flags_still_surfaces_backend_gap() {
-        // decode_call_with_flags on the real-decode gate behaves
-        // exactly like decode_call: NotImplemented, no cursor motion.
+    fn decode_gate_via_flags_surfaces_bss_blocker() {
+        // decode_call_with_flags on the real-decode gate behaves exactly
+        // like decode_call: it drives the frame-body walk to the §3.2
+        // BSS blocker, with no cursor motion.
         let mut d = real_driver();
-        let packet = vec![0u8; 465];
+        let packet = packet_with_valid_gain_header();
         let mut out = vec![0u8; 8_192];
         let err = d
             .decode_call_with_flags(&packet, &mut out, 0, crate::RADECODE_FLAGS_DECODE)
             .unwrap_err();
-        assert_eq!(err, Error::NotImplemented);
+        assert_eq!(err, Error::SpectralCodebookBytesUnavailable);
         assert_eq!(d.calls_completed(), 0);
         assert_eq!(d.total_pcm_emitted(), 0);
+    }
+
+    #[test]
+    fn decode_gate_surfaces_gain_underflow_before_blocker() {
+        // An all-zero first sub-packet biases the §1.1 gain segment-count
+        // negative — that stage-1 error fires before the §3 BSS blocker,
+        // proving the walk runs the pinned prefix in order.
+        let mut d = real_driver();
+        let packet = vec![0u8; 465];
+        let mut out = vec![0u8; 8_192];
+        let err = d.decode_call(&packet, &mut out, 0).unwrap_err();
+        assert!(matches!(err, Error::GainSegmentCountUnderflow { raw: 0 }));
+        assert_eq!(d.calls_completed(), 0);
     }
 
     #[test]

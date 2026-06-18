@@ -23,6 +23,30 @@ numeric facts tables + real-stream validation).
 
 ## What works
 
+- **Backend per-frame-body orchestrator** — [`frame`](src/frame.rs)
+  assembles the statically-pinned prefix of the §0 backend frame-body
+  stage order (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md`
+  §0–§3: gain control → category/quant → spectral VLC dequant) into a
+  single walk. [`decode_frame_body`](src/frame.rs) reads the §1.1
+  gain-envelope segment count from the [`FrameBitReader`](src/bitreader.rs),
+  builds the §2.1 [`SubbandGeometry`](src/subband.rs), then stops
+  **precisely** at the §3 spectral-VLC dequant step — whose seven Huffman
+  codebooks' per-symbol code/length bytes are runtime-built in `.data`
+  BSS at init and absent from the file image (§3.2) — surfacing the typed
+  `Error::SpectralCodebookBytesUnavailable` (docs-gap #1775) rather than
+  guessing the codebook contents. [`frame_body_prefix`](src/frame.rs)
+  returns the recovered [`FrameWalk`](src/frame.rs) (gain count, subband
+  geometry, total coded lines, bits consumed) up to the blocker.
+  [`Driver::decode_call`](src/driver.rs) /
+  [`decode_call_with_flags`](src/driver.rs) now drive every sub-packet
+  through the orchestrator on the real-decode gate, replacing the opaque
+  `Error::NotImplemented` with the precise §3.2 blocker. The real first
+  packet of `FUN_RM_32.rm` carries a well-formed §1.1 gain header (top 6
+  bits = 29 → 23 segments), so the walk reaches the §3.2 blocker on real
+  data — pinned in `tests/driver_realstream.rs`. The §2.2 category-
+  *assignment* loop (`0x8f38` LUT, not extracted), the §3.2 codebook
+  bytes, the §4.3 coupling coefficients, and the §5 iMDCT kernel stay
+  recorded DOCS-GAPs past the blocker.
 - **RealAudio codec SPI export surface** — [`spi`](src/spi.rs) types the
   20 named exports (ordinals 1–20) of `cook.dll` spec/01 §2 pins, behind
   the exhaustive ordinal-ordered [`SpiExport`](src/spi.rs) enum.
@@ -572,18 +596,25 @@ numeric facts tables + real-stream validation).
 
 ## Not yet implemented
 
-The real-decode half of the backend frame-decode — the bitstream
-reader, gain/quantiser, inverse MDCT, optional LPC/temporal prediction,
-post-filter, and joint-stereo coupling sitting behind the
-`[backend_vtable + 0x0c]` slot when the forwarded gate bit is `0` —
-remains a `crate::Error::NotImplemented` GAP (the observe half, gate
-bit `1`, is implemented: zeroed overlap-add output per validation/04
-§4.3). The full-pipeline `Driver::decode_call` /
-`Driver::decode_call_with_flags` validate buffer sizes and run stages
-1+2, then surface that GAP signal explicitly on the real-decode gate so
-consumers can already wire the crate into a real container demuxer and
-treat the backend signal as the single documented gating value while
-the transform pipeline lands in later rounds. The `oxideav_core` registration glue and the cookie
+The real-decode half of the backend frame-decode now **drives the
+frame-body orchestrator** ([`frame`](src/frame.rs)) on the real-decode
+gate: each sub-packet runs the statically-pinned §0–§3 prefix (the §1.1
+gain-envelope segment count and the §2.1 subband → coefficient-range
+geometry) and stops precisely at the §3 spectral-VLC dequant step, whose
+seven Huffman codebooks' per-symbol code/length bytes are runtime-built
+in `.data` BSS at init and absent from the file image (§3.2) —
+surfacing the typed `Error::SpectralCodebookBytesUnavailable` (docs-gap
+#1775). The walk **stops at**, rather than guesses, that BSS blocker; the
+spectral entropy descent, the §4.3 coupling-coefficient values, and the
+§5 iMDCT kernel past it land once a dynamic-BSS-dump Validator round
+provides the populated tables. The observe half (gate bit `1`) is
+implemented: zeroed overlap-add output per validation/04 §4.3. The
+full-pipeline `Driver::decode_call` / `Driver::decode_call_with_flags`
+validate buffer sizes, run stages 1+2, then drive the orchestrator on
+the real-decode gate so consumers can wire the crate into a real
+container demuxer and treat the §3.2 blocker as the single documented
+gating value while the entropy + transform pipeline lands in later
+rounds. The `oxideav_core` registration glue and the cookie
 layouts of the non-extended `0x01000001` / `0x01000002` mono/stereo
 siblings and the multichannel (`0x02000000`) backend family are also
 DOCS-GAPs — typed in `CookCookie::parse` so callers can triage
@@ -603,18 +634,21 @@ codebook dimensions + sign/scale LUTs (§3.1), and the joint-stereo
 mirror-index rotation closed form (§4.2). The statically-pinned pieces of
 that surface — the per-category vector dimensions, the seven codebook
 symbol counts, the sign LUT, and the §4.2 mirror-index rotation — are now
-wired in [`spectral`](src/spectral.rs). **What is not yet assembled into a
-running real-decode path** is the bit-level walk that consumes them
-(the bit-reader state machine, the gain-envelope + category-walk
-sequencing, the spectral VLC descent, the iMDCT kernel) plus three
-**runtime-built-in-BSS** GAPs the trace explicitly leaves open
-(`docs/audio/cook/spec/05` §6): the per-symbol spectral codebook
-code/length **bytes** (§3.2), the per-coupling-width rotation
+wired in [`spectral`](src/spectral.rs), and the §0–§3 prefix is now
+**assembled into the running real-decode walk** by
+[`frame`](src/frame.rs) (the bit-reader state machine, the
+gain-envelope segment-count read, and the §2.1 subband-geometry build).
+**What is not yet wired** is the bit-level entropy descent past the §3
+blocker and three **runtime-built-in-BSS** GAPs the trace explicitly
+leaves open (`docs/audio/cook/spec/05` §6): the per-symbol spectral
+codebook code/length **bytes** (§3.2, the precise sub-step the walk
+stops at as docs-gap #1775), the per-coupling-width rotation
 **coefficient values** (§4.3), and the iMDCT `0x8fcc` / `0xa1b0`
 rotation-table 2-D layouts (carried over from spec/01 §6). Each is
 addressed through a relocated `.data` BSS pointer not present in the file
 image, so it needs a dynamic-BSS-dump Validator/Extractor round before
 the entropy + transform walk can be wired bit-exactly. Until then the
-real-decode gate stays `crate::Error::NotImplemented` (the observe
-half — gate bit `1`, zeroed overlap-add output per validation/04 §4.3 —
-is implemented).
+real-decode gate stops at the typed
+`Error::SpectralCodebookBytesUnavailable` blocker (the observe half —
+gate bit `1`, zeroed overlap-add output per validation/04 §4.3 — is
+implemented).

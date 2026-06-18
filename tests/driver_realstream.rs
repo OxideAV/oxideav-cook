@@ -13,8 +13,10 @@
 //!   sequence with the validator-pinned per-call PCM budgets must
 //!   reproduce the validator's `2 936 832`-byte total exactly.
 //! - [`Driver::decode_call`] with both buffer sizes wired correctly
-//!   must surface the backend GAP as [`Error::NotImplemented`] without
-//!   advancing the cursor.
+//!   drives the frame-body walk (§1.1 gain count + §2.1 subband
+//!   geometry) to the documented §3.2 BSS codebook blocker
+//!   ([`Error::SpectralCodebookBytesUnavailable`], docs-gap #1775)
+//!   without advancing the cursor.
 //!
 //! This file deliberately shares the fixture-walking helpers with
 //! `realstream_fixture.rs` rather than depending on it: every test
@@ -199,10 +201,13 @@ fn advance_after_decode_walks_full_144_call_cadence() {
 }
 
 #[test]
-fn decode_call_on_first_real_packet_surfaces_backend_gap() {
+fn decode_call_on_first_real_packet_surfaces_bss_blocker() {
     // With both buffer sizes wired correctly to the validator's pinned
-    // per-call budgets, decode_call surfaces the backend frame-decode
-    // step as Error::NotImplemented — and the cursor does NOT advance
+    // per-call budgets, decode_call drives the real first packet through
+    // the frame-body walk: its first sub-packet carries a well-formed
+    // §1.1 gain header (top 6 bits = 29 → 23 segments) and a valid §2.1
+    // subband geometry, so the walk reaches the documented §3.2 BSS
+    // codebook blocker (docs-gap #1775) — and the cursor does NOT advance
     // (no partial state published on the GAP signal).
     let mut driver = real_driver();
     let payloads = collect_packet_payloads(FIXTURE);
@@ -210,16 +215,15 @@ fn decode_call_on_first_real_packet_surfaces_backend_gap() {
     let mut out = vec![0u8; VALIDATED_FIRST_CALL_PCM_BYTES as usize];
 
     let err = driver.decode_call(packet, &mut out, 0).unwrap_err();
-    assert_eq!(err, Error::NotImplemented);
+    assert_eq!(err, Error::SpectralCodebookBytesUnavailable);
     assert_eq!(driver.calls_completed(), 0);
     assert_eq!(driver.total_pcm_emitted(), 0);
 }
 
 #[test]
 fn decode_call_rejects_wrong_input_before_backend() {
-    // A length error must surface as the typed mismatch — never as
-    // Error::NotImplemented. The backend GAP signal is reserved
-    // exclusively for the transform pipeline.
+    // A length error must surface as the typed mismatch — never as the
+    // §3.2 BSS-blocker signal, which is reserved for the frame-body walk.
     let mut driver = real_driver();
     let bad_packet = vec![0u8; 464];
     let mut out = vec![0u8; VALIDATED_FIRST_CALL_PCM_BYTES as usize];
@@ -231,8 +235,8 @@ fn decode_call_rejects_wrong_input_before_backend() {
             expected: 465
         }
     );
-    // Distinct from the backend GAP signal — invariants confirmed.
-    assert_ne!(err, Error::NotImplemented);
+    // Distinct from the backend blocker signal — invariants confirmed.
+    assert_ne!(err, Error::SpectralCodebookBytesUnavailable);
     assert_eq!(driver.calls_completed(), 0);
 }
 
@@ -291,10 +295,11 @@ fn observe_gate_output_matches_for_real_and_all_ff_input() {
 }
 
 #[test]
-fn decode_gate_constant_maps_to_decode_and_still_gaps() {
+fn decode_gate_constant_maps_to_decode_and_reaches_bss_blocker() {
     // RADECODE_FLAGS_DECODE (= 1) maps to the real-decode gate
-    // ((~1) & 1 = 0 forwarded to the backend), which is still the
-    // NotImplemented transform GAP — and the cursor must not move.
+    // ((~1) & 1 = 0 forwarded to the backend), which drives the
+    // frame-body walk to the documented §3.2 BSS blocker (docs-gap
+    // #1775) — and the cursor must not move.
     assert_eq!(
         DecodeGate::from_flags(RADECODE_FLAGS_DECODE),
         DecodeGate::Decode
@@ -311,7 +316,7 @@ fn decode_gate_constant_maps_to_decode_and_still_gaps() {
     let err = driver
         .decode_call_with_flags(payload, &mut out, 0, RADECODE_FLAGS_DECODE)
         .unwrap_err();
-    assert_eq!(err, Error::NotImplemented);
+    assert_eq!(err, Error::SpectralCodebookBytesUnavailable);
     assert_eq!(driver.calls_completed(), 0);
     assert_eq!(driver.total_pcm_emitted(), 0);
 }
