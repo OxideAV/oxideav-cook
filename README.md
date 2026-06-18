@@ -513,6 +513,32 @@ numeric facts tables + real-stream validation).
   walk `cook.dll!0x3a50` over the BSS-built codebooks of §3.2) and the
   inverse transform (§5) — and the runtime-built BSS codebook / coupling
   tables (§3.2 / §4.3) remain recorded DOCS-GAPs.
+- **Gain-control envelope (frame-syntax part 1)** —
+  [`gain`](src/gain.rs) wires the first frame-body stage the bit reader
+  feeds: the per-sub-packet gain envelope
+  (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §1,
+  `provenance/05` evidence #2 / #3). Two statically-pinned, non-GAP
+  primitives sit on top of [`FrameBitReader`](src/bitreader.rs) and the
+  existing [`scale`](src/scale.rs) ladder.
+  [`read_segment_count`](src/gain.rs) reads the leading 6-bit field
+  (`read-n-bits` with `n = 6`, the worker `cook.dll!0x4b50`'s `push 6`)
+  and applies the `−6` bias the worker forms (`count + 0xfffffffa`), so
+  the wire field carries `segment_count + 6`; a raw value `< 6` surfaces
+  the typed [`Error::GainSegmentCountUnderflow`](src/lib.rs).
+  [`gain_factor_for_index`](src/gain.rs) resolves a per-segment gain
+  index to `2^(index/2)` via the `0x93f8` `sqrt(2)` ladder indexed at its
+  centre (`1.0` at element 63 — the `0x94f4` positive-window sub-pointer
+  of evidence #3, `(0x94f4 − 0x93f8)/4 = 63`), with the
+  `{1.0, √2, 2.0, 2√2, 4.0}` positive window exposed as
+  [`GAIN_POS_WINDOW`](src/gain.rs). 10 unit tests pin the count-bias
+  endpoints (raw 6 → 0 flat, raw 63 → 57), the mid-range bias, the 6-bit
+  consume, the `< 6` / empty-frame underflow guard, the unity centre, the
+  positive-window match to f32 tolerance, the symmetric negative branch
+  (`f(-2)·f(2) == 1`) and the ladder range endpoints. The per-segment
+  *record reads* (position + gain index, via the §3.2 BSS-gated VLC walk
+  `cook.dll!0x3a50`) and the §1.2 piecewise-constant
+  interpolation/application over the transform sub-blocks stay recorded
+  DOCS-GAPs.
 
 ## Not yet implemented
 

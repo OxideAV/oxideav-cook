@@ -267,11 +267,26 @@
 //! then `>> (32 - n)`) and [`FrameBitReader::read_bit`] /
 //! [`FrameBitReader::read_flag`] (`read-1-bit`, `cook.dll!0x3fc0`,
 //! unsigned `0`/`1` and the binary's arithmetic-shift `0`/`-1` flag form).
-//! Reads at or past the bit limit return `0` and clamp the cursor. Only
-//! the reader primitives are wired; the frame body that drives them (gain
-//! envelope §1, category/quant walk §2, spectral VLC §3, inverse transform
-//! §5) and the runtime-built BSS codebook / coupling tables (§3.2 / §4.3)
-//! remain recorded GAPs.
+//! Reads at or past the bit limit return `0` and clamp the cursor.
+//!
+//! A later round wires the **first frame-body stage** the bit reader
+//! feeds — the per-sub-packet [`gain`] envelope (`spec/05` §1,
+//! `provenance/05` evidence #2 / #3). Two statically-pinned, non-GAP
+//! primitives are wired on top of [`FrameBitReader`] and the
+//! [`scale`] ladder: [`gain::read_segment_count`] (the leading 6-bit
+//! field + the `−6` bias the worker `cook.dll!0x4b50` applies, so the
+//! field carries `segment_count + 6`) and [`gain::gain_factor_for_index`]
+//! (a per-segment gain index → `2^(index/2)` via the `0x93f8` ladder's
+//! centre, `1.0` at element 63 — the `0x94f4` positive-window sub-pointer
+//! of evidence #3, surfaced as [`gain::GAIN_POS_WINDOW`]). The
+//! per-segment *record reads* (position + gain index) descend the VLC
+//! walk `cook.dll!0x3a50`, whose codebook bytes are a §3.2 BSS GAP, and
+//! the §1.2 piecewise-constant interpolation/application over the
+//! transform sub-blocks both stay recorded GAPs.
+//!
+//! The remaining frame-body stages (category/quant walk §2, spectral VLC
+//! §3, inverse transform §5) and the runtime-built BSS codebook /
+//! coupling tables (§3.2 / §4.3) likewise stay recorded GAPs.
 //!
 //! The transform / entropy decode pipeline itself still lands in later
 //! rounds — [`Error::NotImplemented`] continues to gate the
@@ -288,6 +303,7 @@ pub mod descramble;
 pub mod driver;
 pub mod flavor;
 pub mod flavor_property;
+pub mod gain;
 pub mod init;
 pub mod mdct;
 pub mod quantiser;
@@ -588,6 +604,19 @@ pub enum Error {
     /// mirror-index partner `Ncoup - 1 - j` has no entry to read
     /// (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §4.2).
     CouplingTableEmpty,
+    /// The per-frame gain-envelope segment-count field biased to a
+    /// negative count.
+    ///
+    /// `spec/05` §1.1 (evidence #2): the leading 6-bit field carries
+    /// `segment_count + 6` and the worker forms `field − 6`; a
+    /// well-formed stream therefore never carries a raw value below `6`.
+    /// A raw field `< 6` (or an absent field that reads `0` at end of
+    /// frame) would bias negative — surfaced here rather than silently
+    /// wrapping.
+    GainSegmentCountUnderflow {
+        /// The raw 6-bit field value (`< 6`) that biased negative.
+        raw: u32,
+    },
 }
 
 impl core::fmt::Display for Error {
@@ -725,6 +754,11 @@ impl core::fmt::Display for Error {
             Error::CouplingTableEmpty => f.write_str(
                 "oxideav-cook: joint-stereo coupling table has length 0 \
                  (no mirror-index partner to read; spec/05 §4.2)",
+            ),
+            Error::GainSegmentCountUnderflow { raw } => write!(
+                f,
+                "oxideav-cook: gain-envelope segment-count field {raw} biased \
+                 to a negative count (field carries segment_count + 6; spec/05 §1.1)"
             ),
         }
     }

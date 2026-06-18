@@ -8,6 +8,29 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `gain` module — frame-syntax **part 1**, the per-sub-packet
+  gain-control envelope (`spec/05` §1, `provenance/05` evidence #2 / #3),
+  the first frame-body stage the `bitreader` feeds. Wires the two
+  statically-pinned, non-GAP primitives of §1 on top of `FrameBitReader`
+  and the existing `scale` ladder: `read_segment_count(reader)` reads the
+  leading 6-bit field (`read-n-bits` with `n = 6`, the worker
+  `cook.dll!0x4b50`'s `push 6`) and applies the `−6` bias the worker
+  forms (`count + 0xfffffffa`), so the wire field carries
+  `segment_count + 6` and a raw value `< 6` surfaces the typed
+  `Error::GainSegmentCountUnderflow`. `gain_factor_for_index(index)`
+  resolves a per-segment gain index to `2^(index/2)` via the `0x93f8`
+  `sqrt(2)` ladder indexed at its centre (`1.0` at element 63) — the
+  `0x94f4` positive-window sub-pointer of evidence #3 (`(0x94f4 −
+  0x93f8)/4 = 63`), with the `{1.0, √2, 2.0, 2√2, 4.0}` positive window
+  exposed as `GAIN_POS_WINDOW`. 10 unit tests pin the count bias
+  endpoints (raw 6 → 0 flat, raw 63 → 57), the mid-range bias, the 6-bit
+  consume, the `< 6` / empty-frame underflow guard, the unity centre, the
+  positive-window match to f32 tolerance, the symmetric negative branch
+  (`f(-2)·f(2) == 1`), and the ladder range endpoints. The per-segment
+  *record reads* (position + gain index, via the VLC walk
+  `cook.dll!0x3a50` whose codebook bytes are a §3.2 BSS GAP) and the §1.2
+  piecewise-constant interpolation/application over the transform
+  sub-blocks stay recorded GAPs.
 - `bitreader` module — the MSB-first big-endian frame bit reader the
   backend per-frame body reads through (`spec/05` §0.1, `provenance/05`
   evidence #1). `FrameBitReader` holds the four-field reader state block
