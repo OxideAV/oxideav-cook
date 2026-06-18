@@ -291,6 +291,28 @@ numeric facts tables + real-stream validation).
   *"tightened but still GAP: 2D row/column layout not statically
   unambiguous"*) is not pinned by this round; the structural lookup is
   the piece this module wires.
+- **Subband → coefficient-range geometry** —
+  [`subband`](src/subband.rs) wires frame-syntax §2.1
+  (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §2.1,
+  `provenance/05` evidence #4): the same `cook.dll!0x8c40` LUT that
+  [`bit_alloc`](src/bit_alloc.rs) reads as a category map is *also*,
+  read as `[band*4 + 0x8c40]`, the **start spectral line of each
+  subband** (identity `0..11` over the first twelve subbands, then
+  compresses). [`subband_start_line`](src/subband.rs) reads `lut[band]`,
+  [`subband_line_range`](src/subband.rs) is the half-open
+  `[start_line[band] .. start_line[band+1])` coefficient range a band
+  occupies, and [`SubbandGeometry::new`](src/subband.rs) caches the
+  `subband_count + 1` boundary lines for a fixed-`subband_count` stream
+  and answers per-band [`line_range`](src/subband.rs) /
+  [`line_count`](src/subband.rs) / [`total_coded_lines`](src/subband.rs)
+  queries — the band → line mapping both the §2.2 dequant walk and the
+  §4 joint-stereo coupling split drive off. The companion `0.5` scalar
+  at `0x8c3c` is surfaced as [`SUBBAND_HALF_SCALAR`](src/subband.rs). The
+  §2.2 category-*assignment* bit-allocation loop (keyed off the `0x8f38`
+  per-category expected-cost LUT, which is **not** among the extracted
+  tables) is a recorded DOCS-GAP; only the static band → line geometry
+  is wired here. Ten unit tests pin the identity run, the post-12
+  compression, the gap-free boundary tiling, and the range bounds.
 - **Exponent-indexed scale-ladder accessors** —
   [`scale`](src/scale.rs) wires the typed lookups for the two
   back-to-back 127-entry f32 ladders (`cook.dll!0x91fc` = `2^k`,

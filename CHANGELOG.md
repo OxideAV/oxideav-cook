@@ -8,6 +8,25 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `subband` module — frame-syntax **§2.1**, the subband →
+  spectral-coefficient-range geometry (`spec/05` §2.1, `provenance/05`
+  evidence #4). Pins the fact that the same `0x8c40` LUT `bit_alloc`
+  reads as a category map is *also*, read as `[band*4 + 0x8c40]`, the
+  **start spectral line of each subband** (identity `0..11` over the
+  first twelve, then compresses). `subband_start_line(band)` reads
+  `lut[band]`; `subband_line_range(band)` is the half-open
+  `[start_line[band] .. start_line[band+1])` coefficient range a band
+  occupies; and `SubbandGeometry::new(subband_count)` caches the
+  `subband_count + 1` boundary lines and answers per-band range / width
+  / `total_coded_lines` queries — the band → line mapping both the §2.2
+  dequant walk and the §4 coupling split drive off. The companion `0.5`
+  scalar at `0x8c3c` is surfaced as `SUBBAND_HALF_SCALAR`. The §2.2
+  category-assignment bit-allocation loop (keyed off the `0x8f38`
+  per-category expected-cost LUT, which is not among the extracted
+  tables) stays a recorded DOCS-GAP; only the static band → line
+  geometry is wired. 10 unit tests pin the identity run, the post-12
+  compression, the boundary tiling (no gap/overlap), and the range
+  bounds.
 - `gain` module — frame-syntax **part 1**, the per-sub-packet
   gain-control envelope (`spec/05` §1, `provenance/05` evidence #2 / #3),
   the first frame-body stage the `bitreader` feeds. Wires the two

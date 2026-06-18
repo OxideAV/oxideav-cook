@@ -312,6 +312,7 @@ pub mod scale;
 pub mod session;
 pub mod spectral;
 pub mod spi;
+pub mod subband;
 pub mod subpacket;
 pub mod tables;
 
@@ -369,6 +370,10 @@ pub use spectral::{
 pub use spi::{
     SpiExport, E_INVALIDARG, E_NOTIMPL, HR_UNRECOGNISED_SELECTOR, RASETFLAVOR_CONTEXT_OFFSET,
     RA_NUMBER_OF_FLAVORS, RA_NUMBER_OF_FLAVORS2, SPI_EXPORT_COUNT, S_OK,
+};
+pub use subband::{
+    subband_line_range, subband_start_line, SubbandGeometry, SUBBAND_HALF_SCALAR,
+    SUBBAND_HALF_SCALAR_RVA, SUBBAND_IDENTITY_RUN, SUBBAND_START_LINE_LUT_RVA,
 };
 pub use subpacket::SubPacketLayout;
 
