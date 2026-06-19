@@ -391,30 +391,31 @@ numeric facts tables + real-stream validation).
   so the ladder reading reproduces the per-category-table value
   bit-for-bit — the gain-step table is a 7-element slice of the ladder.
   The exponent-producing runtime stage stays a spec/01 §6 DOCS-GAP.
-- **Per-band quantiser arithmetic** — [`quantiser`](src/quantiser.rs)
-  wires the two per-band primitives the worker `cook.dll!0x69f0`
-  computes, pinned verbatim in the table `.meta` files (the first decode
-  *arithmetic* beyond table access). The magnitude form
-  `bias + |sample| * step` — `gain-bias-ramp.meta`: *"the worker forms
-  `(bias + |sample| * step)` per band"* — is
-  [`band_gain_magnitude(&params, sample)`](src/quantiser.rs) /
-  [`CategoryParameters::band_gain_magnitude`](src/quantiser.rs),
-  evaluating `gain_bias + |sample| * gain_step` against one
-  [`CategoryParameters`](src/category.rs) bundle. The level-count clip —
-  `category-level-count.meta`: the `{13, 9, 6, 4, 3, 2, 1}` LUT is
-  *"used both to size and to clip the per-band quantiser index"* — is
-  [`clip_quantiser_index(level_count, raw_index)`](src/quantiser.rs) /
-  [`CategoryParameters::clip_quantiser_index`](src/quantiser.rs),
-  capping a raw index to `0..=level_count-1` (an index `>= L` clips to
-  `L - 1`). Eight unit tests pin both: the magnitude is `|sample|`-
-  symmetric, collapses to the category bias at `sample = 0`, and reduces
-  to `bias + |sample|` for category 3 (`gain_step == 1.0`); the clip
-  passes through every in-range index and caps at the top valid index
-  per category (cat 0 → 12, cat 6 single-level → always 0). The band
-  loop driving these (raw-index read, sign restoration, the `0x8fcc`
-  category-expectation combine that audit #17 leaves a GAP, and the feed
-  into the inverse MDCT) is not pinned beyond these two `.meta`
-  sentences and stays a recorded DOCS-GAP.
+- **Per-band quantiser arithmetic (full §2.2 closed form)** —
+  [`quantiser`](src/quantiser.rs) wires the per-band quantiser the worker
+  `cook.dll!0x69f0` computes, now assembled into the **complete spec/05
+  §2.2 closed form** `level = clip(round(bias[cat] + |q|*step[cat] /
+  divisor), level_count[cat])` (`provenance/05` evidence #7: the worker
+  does `fabs`, `*step`, `+bias`, `fdiv [0xa7d4]`, `f→i`, clamp to
+  `[cat*4+0x8f90]`). [`quantiser_level(&params, q)`](src/quantiser.rs) /
+  [`CategoryParameters::quantiser_level`](src/quantiser.rs) compose the
+  magnitude form, the [`QUANTISER_DIVISOR`](src/quantiser.rs) divide (the
+  f32 `1.0` at RVA `0xa7d4` — carried as a named constant since the binary
+  applies it unconditionally), round-to-nearest float→int (negative
+  results floored to the unsigned `0` lower bound), and the level-count
+  clip in the binary's order. The two underlying primitives remain
+  exposed: the magnitude form `bias + |sample| * step` is
+  [`band_gain_magnitude`](src/quantiser.rs) (`gain-bias-ramp.meta`: *"the
+  worker forms `(bias + |sample| * step)` per band"*) and the level-count
+  clip to `0..=level_count-1` is
+  [`clip_quantiser_index`](src/quantiser.rs) (`category-level-count.meta`:
+  *"used both to size and to clip the per-band quantiser index"*). 14 unit
+  tests pin the magnitude symmetry / bias collapse, the clip pass-through
+  and top-cap per category, and the full closed form (closed-form match,
+  `|q|` symmetry, small-magnitude floor-to-0, large-magnitude top clip,
+  divisor-identity). The `q`-supplying §3.1 VLC walk (whose codebook bytes
+  are a §3.2 BSS GAP), the `0x8fcc` category-expectation combine (audit
+  #17 GAP), and the feed into the inverse MDCT stay recorded DOCS-GAPs.
 - **Per-buffer XOR descramble** — [`descramble`](src/descramble.rs) is
   the first byte-touching stage of the `RADecode` decode driver: a
   word-wise (32-bit, little-endian) XOR pass over the input, keyed by
@@ -520,15 +521,28 @@ numeric facts tables + real-stream validation).
   odd-length table is its own partner — the 45° pan point), and
   [`split_coupled_coefficient`](src/spectral.rs) reproduces
   `(out0, out1) = c * (coef[j], coef[Ncoup-1-j])` given a
-  caller-supplied coefficient table. The per-symbol codebook code/length
-  **bytes** (§3.2) and the per-coupling-width rotation **coefficient
-  values** (§4.3) are built in the decoder's `.data` BSS at init and are
-  not in the file image — explicit recorded GAPs surfaced as RVA
-  constants ([`SPECTRAL_CODEBOOK_VALUE_PTRS_RVA`](src/spectral.rs) /
-  [`SPECTRAL_CODEBOOK_LENGTH_PTRS_RVA`](src/spectral.rs)) but with no
-  retyped numbers, pending a dynamic-BSS-dump Validator round. 16 unit
-  tests pin the codebook counts, vector-dimension sequences, sign LUT,
-  and the mirror-index self-inverse / energy-pan invariants.
+  caller-supplied coefficient table. The **§3.1 dequant tail** is also
+  pinned: the three non-zero dequant-scale magnitudes `{0.17678, 0.25,
+  0.70711}` at RVA `0x9150` (`provenance/05` evidence #10) are
+  [`DEQUANT_SCALE_NONZERO`](src/spectral.rs), and
+  [`spectral_coefficient(value, sign_bit, scale, gain)`](src/spectral.rs)
+  composes the full pinned reconstruction `coef = value * sign *
+  dequant_scale * band_gain` once the codebook `value` is in hand. The
+  **§3.1 grouping arithmetic** ties the band geometry to the symbol read:
+  [`symbols_for_band(line_count, dim)`](src/spectral.rs) = `ceil(line /
+  dim)` and [`coefficients_for_symbols`](src/spectral.rs) = `symbols *
+  dim` (each VLC symbol expands to `dim` coefficients), and
+  [`SubbandGeometry::band_symbol_count`](src/subband.rs) sizes a band's
+  symbol read from its §2.1 line count. The per-symbol codebook
+  code/length **bytes** (§3.2), the per-coupling-width rotation
+  **coefficient values** (§4.3), and the dim→codebook + lo/hi-branch
+  *selection* (not statically unambiguous — the symbol counts do not
+  factor as a unique `base^dim`) are recorded GAPs, surfaced as RVA
+  constants but with no retyped numbers, pending a dynamic-BSS-dump
+  Validator round. 27 unit tests pin the codebook counts,
+  vector-dimension sequences, sign LUT, dequant-scale triple, coefficient
+  assembly, grouping coverage, and the mirror-index self-inverse /
+  energy-pan invariants.
 - **MSB-first frame bit reader** — [`bitreader`](src/bitreader.rs) wires
   the foundational primitive every backend per-frame stage reads through
   (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §0.1,

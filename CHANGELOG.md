@@ -8,6 +8,28 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `quantiser` **full §2.2 closed form** — `quantiser_level(&params, q)` /
+  `CategoryParameters::quantiser_level` compose the complete spec/05 §2.2
+  per-band quantiser `level = clip(round(bias[cat] + |q|*step[cat] /
+  divisor), level_count[cat])` (provenance/05 evidence #7) on top of the
+  existing `band_gain_magnitude` + `clip_quantiser_index` primitives. The
+  divisor is the f32 `1.0` constant at RVA `0xa7d4`, exposed as
+  `QUANTISER_DIVISOR` / `QUANTISER_DIVISOR_RVA` (carried as a named
+  constant since the binary applies it unconditionally). 6 new tests.
+- `spectral` §3.1 **dequant scale triple + coefficient assembly** —
+  `DEQUANT_SCALE_NONZERO` pins the three non-zero dequant-scale magnitudes
+  `{0.17678, 0.25, 0.70711}` at RVA `0x9150` (`DEQUANT_SCALE_RVA`,
+  provenance/05 evidence #10), and `spectral_coefficient(value, sign_bit,
+  scale, gain)` composes the full pinned reconstruction `coef = value *
+  sign * dequant_scale * band_gain`. 4 new tests.
+- `spectral` §3.1 **grouping arithmetic** — `symbols_for_band(line_count,
+  dim)` = `ceil(line_count / dim)` and `coefficients_for_symbols(symbols,
+  dim)` = `symbols * dim` wire the pinned per-symbol vector grouping (each
+  VLC symbol expands to `dim` coefficients). `SubbandGeometry::band_symbol_count(band, dim)`
+  ties the §2.1 band geometry to the §3.1 symbol read. New
+  `Error::SpectralVectorDimZero` guards the ceil-div. The dim→codebook and
+  lo/hi-branch selection stay §3.1 GAPs (the symbol counts do not factor
+  as a unique `base^dim`). 9 new tests.
 - `frame` module — the backend per-frame-body **orchestrator** (`spec/05`
   §0–§3). `decode_frame_body(frame, channels, subband_count)` assembles
   the statically-pinned prefix of the §0 stage order (gain control →
