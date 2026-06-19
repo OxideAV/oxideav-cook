@@ -365,7 +365,10 @@ pub use mdct::{
     mdct_half_window, MdctWindowLength, MDCT_WINDOW_COUNT, MDCT_WINDOW_TABLE_END_RVA,
     MDCT_WINDOW_TABLE_RVA,
 };
-pub use quantiser::{band_gain_magnitude, clip_quantiser_index};
+pub use quantiser::{
+    band_gain_magnitude, clip_quantiser_index, quantiser_level, QUANTISER_DIVISOR,
+    QUANTISER_DIVISOR_RVA,
+};
 pub use reciprocal::{
     reciprocal_for_denominator, reciprocal_one_twentieth, ReciprocalDenominator,
     RECIPROCAL_DENOMINATOR_MAX, RECIPROCAL_DENOMINATOR_MIN, RECIPROCAL_ONE_TWENTIETH_INDEX,

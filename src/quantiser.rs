@@ -1,10 +1,14 @@
 //! Per-band gain/quantiser arithmetic (worker `cook.dll!0x69f0`).
 //!
-//! Source-of-truth: `docs/audio/cook/tables/gain-bias-ramp.meta` and
-//! `docs/audio/cook/tables/category-level-count.meta`, plus audit points
-//! #18 / #19 in `docs/audio/cook/provenance/03-cook-audit.md`. These pin
-//! two facts about the per-band quantiser worker `cook.dll!0x69f0`
-//! beyond the parallel-table *access* already wired in
+//! Source-of-truth: `docs/audio/cook/spec/05-cook-backend-frame-syntax.md`
+//! §2.2 (the per-band quantiser closed form), the two `.meta` files
+//! `docs/audio/cook/tables/{gain-bias-ramp,category-level-count}.meta`,
+//! and `docs/audio/cook/provenance/05-cook-backend.md` evidence #7
+//! (*"Quantiser closed form `clip(round(bias + |q|*step/divisor),
+//! level)`; divisor `1.0` at `0xa7d4`"*; the worker `0x69f0` does
+//! `fabs`, `*step`, `+bias`, `fdiv [0xa7d4]`, `f→i`, clamp to
+//! `[cat*4+0x8f90]`). These pin the per-band quantiser worker
+//! `cook.dll!0x69f0` beyond the parallel-table *access* already wired in
 //! [`crate::category`]:
 //!
 //! 1. **The dequant magnitude form.** `gain-bias-ramp.meta` records the
@@ -23,6 +27,18 @@
 //!    `level_count = L` admits quantiser indices `0..=L-1`, and an index
 //!    at or above `L` is clipped down to the last valid index `L-1`.
 //!
+//! 3. **The full closed form (spec/05 §2.2).** The worker assembles the
+//!    two primitives above into a single per-band quantiser level:
+//!    `level = clip( round( bias[cat] + |q| * step[cat] / divisor ),
+//!    level_count[cat] )`, where the `divisor` is the f32 `1.0` constant
+//!    at RVA `0xa7d4` ([`QUANTISER_DIVISOR`], evidence #7's `fdiv
+//!    [0xa7d4]`). The order of operations is the binary's: `fabs(q)`,
+//!    `* step`, `+ bias`, `/ divisor`, float→int round, then the
+//!    `0x8f90` level-count clamp. With the pinned `divisor == 1.0` the
+//!    division is the identity, so `level = clip(round(bias + |q|*step),
+//!    level_count)` — but the divisor is carried as a named constant
+//!    because the binary applies it unconditionally (evidence #7).
+//!
 //! ## What this module provides
 //!
 //! - [`band_gain_magnitude`] — evaluates `bias + |sample| * step` for a
@@ -31,25 +47,46 @@
 //! - [`clip_quantiser_index`] — clips a raw per-band quantiser index to
 //!   the `0..=level_count-1` range the category's level-count admits,
 //!   the `category-level-count.meta` clip.
+//! - [`quantiser_level`] — the full §2.2 closed form
+//!   `clip(round(bias + |q|*step / divisor), level_count)`, composing
+//!   the magnitude form, the [`QUANTISER_DIVISOR`] divide, the
+//!   round-to-nearest float→int, and the level-count clip in the
+//!   binary's order.
 //! - [`CategoryParameters::band_gain_magnitude`] /
-//!   [`CategoryParameters::clip_quantiser_index`] — the same two
-//!   operations as methods on the bundle, since both read fields of one
+//!   [`CategoryParameters::clip_quantiser_index`] /
+//!   [`CategoryParameters::quantiser_level`] — the same operations as
+//!   methods on the bundle, since each reads fields of one
 //!   already-looked-up [`CategoryParameters`].
 //!
 //! ## What this module does *not* cover (DOCS-GAP)
 //!
-//! The two pinned facts are the *per-band* arithmetic primitives. The
-//! band loop that drives them — how raw quantiser indices are read from
-//! the bitstream, how `band_gain_magnitude` is combined with the
-//! spectral coefficient (the `0x8fcc` category-expectation table, audit
-//! #17, is *"not statically unambiguous"* and left a GAP), the sign
+//! The pinned facts are the *per-band* arithmetic. The band loop that
+//! drives them — how raw quantiser indices `q` are read from the
+//! bitstream (the §3.1 VLC walk, whose codebook bytes are a §3.2 BSS
+//! GAP), how the level combines with the §0x8fcc category-expectation
+//! table (audit #17, *"not statically unambiguous"*), the sign
 //! restoration, and where the result feeds the inverse MDCT — is **not**
-//! pinned by spec/01 or the audit beyond the single `(bias + |sample| *
-//! step)` sentence. This module wires only the two primitives the
-//! `.meta` files state explicitly; the surrounding loop remains a
-//! recorded GAP.
+//! pinned beyond the spec/05 §2.2 closed form and the two `.meta`
+//! sentences. This module wires the closed form and its two primitives;
+//! the surrounding loop and the `q`-supplying entropy walk remain
+//! recorded GAPs.
 
 use crate::category::CategoryParameters;
+
+/// The per-band quantiser divisor — the f32 `1.0` constant at RVA
+/// `0xa7d4` the worker `cook.dll!0x69f0` divides the biased magnitude by
+/// (`spec/05` §2.2, `provenance/05` evidence #7: *"divisor `1.0` at
+/// `0xa7d4`"*, the `fdiv [0xa7d4]`).
+///
+/// The pinned value is `1.0`, so the division is mathematically the
+/// identity; it is carried as a named constant because the binary applies
+/// it unconditionally in the closed form
+/// `clip(round(bias + |q|*step / divisor), level_count)`.
+pub const QUANTISER_DIVISOR: f32 = 1.0;
+
+/// `.rdata` RVA of the [`QUANTISER_DIVISOR`] `1.0` constant
+/// (`spec/05` §2.2, `provenance/05` evidence #7).
+pub const QUANTISER_DIVISOR_RVA: u32 = 0xa7d4;
 
 impl CategoryParameters {
     /// Evaluate the per-band gain magnitude `bias + |sample| * step` for
@@ -75,6 +112,48 @@ impl CategoryParameters {
     pub fn clip_quantiser_index(&self, raw_index: u32) -> u32 {
         clip_quantiser_index(self.level_count, raw_index)
     }
+
+    /// The full §2.2 per-band quantiser level for a raw VLC magnitude
+    /// `q`: `clip(round(bias + |q|*step / divisor), level_count)` against
+    /// this category's parameters.
+    ///
+    /// `q` is the per-band quantisation magnitude the §3.1 VLC walk
+    /// decodes (its supplying codebook bytes are a §3.2 BSS GAP; this is
+    /// the arithmetic the worker applies once `q` is in hand). See
+    /// [`quantiser_level`] for the free-function form and the order of
+    /// operations.
+    pub fn quantiser_level(&self, q: f32) -> u32 {
+        quantiser_level(self, q)
+    }
+}
+
+/// The full §2.2 per-band quantiser closed form
+/// `clip(round(bias + |q|*step / divisor), level_count)` (worker
+/// `cook.dll!0x69f0`, `spec/05` §2.2, `provenance/05` evidence #7).
+///
+/// Operations are applied in the binary's order:
+///
+/// 1. `mag = bias + |q| * step` — the [`band_gain_magnitude`] form
+///    (`fabs`, `* step`, `+ bias`).
+/// 2. `mag / divisor` — the [`QUANTISER_DIVISOR`] divide (`fdiv
+///    [0xa7d4]`); the pinned divisor is `1.0`.
+/// 3. round-to-nearest float→int — the `f→i` conversion. A negative
+///    rounded value (possible because `bias` is negative and `|q|*step`
+///    can be small) is floored to `0` before the clip, since the
+///    quantiser index is unsigned and the level-count clamp's lower
+///    bound is `0`.
+/// 4. `clip(.., level_count)` — the [`clip_quantiser_index`] cap to
+///    `0..=level_count-1`.
+///
+/// `params` is one looked-up [`CategoryParameters`] bundle; `q` is the
+/// raw per-band VLC magnitude (a §3.2 BSS GAP supplies it).
+pub fn quantiser_level(params: &CategoryParameters, q: f32) -> u32 {
+    let mag = band_gain_magnitude(params, q) / QUANTISER_DIVISOR;
+    // Round-to-nearest then floor any negative result to 0 (the index is
+    // unsigned; the level-count clamp's lower bound is 0).
+    let rounded = mag.round();
+    let raw = if rounded <= 0.0 { 0 } else { rounded as u32 };
+    clip_quantiser_index(params.level_count, raw)
 }
 
 /// Evaluate `bias + |sample| * step` for a category's parameter bundle.
@@ -203,5 +282,79 @@ mod tests {
         // Defensive: a hypothetical zero count never underflows.
         assert_eq!(clip_quantiser_index(0, 0), 0);
         assert_eq!(clip_quantiser_index(0, u32::MAX), 0);
+    }
+
+    #[test]
+    fn quantiser_divisor_is_pinned_one() {
+        // spec/05 §2.2 / evidence #7: divisor is the f32 1.0 at 0xa7d4.
+        assert_eq!(QUANTISER_DIVISOR, 1.0);
+        assert_eq!(QUANTISER_DIVISOR_RVA, 0xa7d4);
+    }
+
+    #[test]
+    fn quantiser_level_matches_closed_form() {
+        // For every category and a spread of magnitudes, the level equals
+        // a hand-evaluation of clip(round(bias + |q|*step / divisor),
+        // level_count), and the method agrees with the free function.
+        for cat in 0..=crate::MAX_CATEGORY_INDEX {
+            let p = params(cat);
+            for &q in &[-9.0f32, -2.5, -0.0, 0.0, 0.4, 1.0, 3.7, 50.0] {
+                let mag = (p.gain_bias + q.abs() * p.gain_step) / QUANTISER_DIVISOR;
+                let rounded = mag.round();
+                let raw = if rounded <= 0.0 { 0 } else { rounded as u32 };
+                let expected = clip_quantiser_index(p.level_count, raw);
+                assert_eq!(quantiser_level(&p, q), expected, "cat {cat} q {q}");
+                assert_eq!(p.quantiser_level(q), expected, "cat {cat} q {q}");
+            }
+        }
+    }
+
+    #[test]
+    fn quantiser_level_uses_absolute_magnitude() {
+        // The closed form takes |q|: +q and -q give the same level.
+        for cat in 0..=crate::MAX_CATEGORY_INDEX {
+            let p = params(cat);
+            for &q in &[0.5f32, 1.0, 7.0, 33.0] {
+                assert_eq!(p.quantiser_level(q), p.quantiser_level(-q));
+            }
+        }
+    }
+
+    #[test]
+    fn quantiser_level_small_magnitude_floors_to_zero() {
+        // bias is negative (-0.20..0.0); a tiny |q| keeps bias + |q|*step
+        // <= 0, which floors to index 0 (the unsigned lower bound).
+        let p = params(0); // bias = -0.20, step = 0.354 (smallest).
+        assert!(p.gain_bias < 0.0);
+        assert_eq!(p.quantiser_level(0.0), 0); // bias alone < 0 → 0.
+        assert_eq!(p.quantiser_level(0.1), 0); // still <= 0 after round.
+    }
+
+    #[test]
+    fn quantiser_level_clips_to_top_for_large_magnitude() {
+        // A huge magnitude rounds well past every category's level count,
+        // so the result is clipped to level_count - 1.
+        for cat in 0..=crate::MAX_CATEGORY_INDEX {
+            let p = params(cat);
+            assert_eq!(p.quantiser_level(1.0e6), p.level_count - 1, "cat {cat}");
+        }
+    }
+
+    #[test]
+    fn quantiser_level_divisor_is_identity() {
+        // With the pinned divisor == 1.0 the divide is the identity:
+        // quantiser_level equals round-then-clip of band_gain_magnitude.
+        for cat in 0..=crate::MAX_CATEGORY_INDEX {
+            let p = params(cat);
+            for &q in &[2.0f32, 5.5, 11.0] {
+                let mag = p.band_gain_magnitude(q);
+                let rounded = mag.round();
+                let raw = if rounded <= 0.0 { 0 } else { rounded as u32 };
+                assert_eq!(
+                    p.quantiser_level(q),
+                    clip_quantiser_index(p.level_count, raw)
+                );
+            }
+        }
     }
 }
