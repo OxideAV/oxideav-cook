@@ -212,6 +212,27 @@ impl SubbandGeometry {
     pub fn total_coded_lines(&self) -> u32 {
         *self.boundaries.last().expect("at least one boundary")
     }
+
+    /// The number of §3.1 VLC symbols subband `band` needs when each
+    /// symbol expands to `dim` coefficients —
+    /// `ceil(line_count(band) / dim)` (`spec/05` §3.1 grouping, via
+    /// [`crate::spectral::symbols_for_band`]).
+    ///
+    /// `dim` is the band's per-category vector dimension (one of the §2.2
+    /// [`crate::spectral::CategoryVectorDims`] branches, `2..=10`); it is
+    /// supplied by the caller because the category-assignment loop and the
+    /// lo-or-hi branch selection are recorded §2.2 / §3.1 GAPs. This ties
+    /// the pinned §2.1 band geometry to the pinned §3.1 grouping
+    /// arithmetic, sizing the dequant walk's per-band symbol read.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::BitAllocAxisOutOfRange`] when `band >= subband_count`.
+    /// - [`Error::SpectralVectorDimZero`] when `dim == 0`.
+    pub fn band_symbol_count(&self, band: u32, dim: u32) -> Result<u32, Error> {
+        let line_count = self.line_count(band)?;
+        crate::spectral::symbols_for_band(line_count, dim)
+    }
 }
 
 #[cfg(test)]
@@ -311,6 +332,32 @@ mod tests {
         // start_line(subband_count) IS valid (the one-past boundary).
         assert!(geom.start_line(20).is_ok());
         assert!(geom.start_line(21).is_err());
+    }
+
+    #[test]
+    fn band_symbol_count_ties_geometry_to_grouping() {
+        // Each band's symbol count is ceil(line_count / dim); for the
+        // unit-width first twelve bands a dim of 2 needs exactly 1 symbol
+        // (1 line over-covered by a 2-coefficient symbol).
+        let geom = SubbandGeometry::new(20).unwrap();
+        for band in 0..(SUBBAND_IDENTITY_RUN - 1) {
+            assert_eq!(geom.line_count(band).unwrap(), 1);
+            assert_eq!(geom.band_symbol_count(band, 2).unwrap(), 1, "band {band}");
+            assert_eq!(geom.band_symbol_count(band, 10).unwrap(), 1, "band {band}");
+        }
+    }
+
+    #[test]
+    fn band_symbol_count_rejects_bad_inputs() {
+        let geom = SubbandGeometry::new(20).unwrap();
+        assert!(matches!(
+            geom.band_symbol_count(20, 2),
+            Err(Error::BitAllocAxisOutOfRange { .. })
+        ));
+        assert_eq!(
+            geom.band_symbol_count(0, 0).unwrap_err(),
+            Error::SpectralVectorDimZero
+        );
     }
 
     #[test]

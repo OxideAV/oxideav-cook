@@ -211,6 +211,45 @@ pub fn category_vector_dims(index: CategoryIndex) -> CategoryVectorDims {
     CategoryVectorDims::for_category(index)
 }
 
+/// The number of VLC symbols a band of `line_count` spectral lines needs
+/// when each symbol expands to `dim` coefficients — `ceil(line_count /
+/// dim)` (`spec/05 §3.1`: *"each symbol expands to `dim` coefficients via
+/// a value-table lookup"*; the per-band vector dimension `dim` is one of
+/// the §2.2 [`CategoryVectorDims`] branches, `2..=10`).
+///
+/// This is the pinned **grouping** relationship: the §3 dequant walk
+/// reads `symbols_for_band` VLC symbols for the band and expands each to
+/// `dim` coefficients, covering the band's `line_count` lines (the last
+/// symbol may over-cover when `dim` does not divide `line_count`). It
+/// wires only the count arithmetic; *which* codebook / which lo-or-hi
+/// branch the band uses is a recorded §3.1 GAP (the dim → codebook
+/// mapping is not statically unambiguous), so `dim` is supplied by the
+/// caller rather than selected here.
+///
+/// # Errors
+///
+/// Returns [`Error::SpectralVectorDimZero`] when `dim == 0` (no division
+/// possible; a real category dimension is always `2..=10`).
+pub fn symbols_for_band(line_count: u32, dim: u32) -> Result<u32, Error> {
+    if dim == 0 {
+        return Err(Error::SpectralVectorDimZero);
+    }
+    Ok(line_count.div_ceil(dim))
+}
+
+/// The number of spectral coefficients `n` decoded VLC symbols of vector
+/// dimension `dim` expand to — `n * dim` (`spec/05 §3.1`: each symbol
+/// expands to `dim` coefficients).
+///
+/// The inverse-direction companion of [`symbols_for_band`]: it is the
+/// coverage `symbols_for_band(line_count, dim)` symbols actually decode,
+/// which is `>= line_count` (equal when `dim` divides `line_count`).
+#[inline]
+#[must_use]
+pub const fn coefficients_for_symbols(symbols: u32, dim: u32) -> u32 {
+    symbols * dim
+}
+
 /// Typed spectral-codebook index — in `0..=MAX_SPECTRAL_CODEBOOK_INDEX`.
 ///
 /// Constructed by [`SpectralCodebook::new`], so consumers never index the
@@ -422,6 +461,59 @@ mod tests {
         // Only bit 0 matters — a single mask bit, per spec/05 §3.1.
         assert_eq!(sign_from_bit(2), 1.0);
         assert_eq!(sign_from_bit(3), -1.0);
+    }
+
+    #[test]
+    fn symbols_for_band_is_ceil_div() {
+        // ceil(line_count / dim): exact divisions, and over-cover remainders.
+        assert_eq!(symbols_for_band(10, 2).unwrap(), 5); // 5*2 = 10 exact.
+        assert_eq!(symbols_for_band(11, 2).unwrap(), 6); // 6*2 = 12 covers 11.
+        assert_eq!(symbols_for_band(0, 5).unwrap(), 0); // empty band.
+        assert_eq!(symbols_for_band(1, 10).unwrap(), 1); // one symbol covers a single line.
+        assert_eq!(symbols_for_band(20, 5).unwrap(), 4);
+        assert_eq!(symbols_for_band(21, 5).unwrap(), 5);
+    }
+
+    #[test]
+    fn symbols_for_band_rejects_zero_dim() {
+        assert_eq!(
+            symbols_for_band(8, 0).unwrap_err(),
+            Error::SpectralVectorDimZero
+        );
+    }
+
+    #[test]
+    fn coefficients_for_symbols_is_product() {
+        assert_eq!(coefficients_for_symbols(5, 2), 10);
+        assert_eq!(coefficients_for_symbols(0, 7), 0);
+        assert_eq!(coefficients_for_symbols(4, 5), 20);
+    }
+
+    #[test]
+    fn symbol_coverage_is_at_least_line_count() {
+        // The symbols decoded for a band always cover (>=) its lines, and
+        // the over-cover is strictly less than one full dim.
+        for dim in [2u32, 4, 5, 10] {
+            for line_count in 0u32..40 {
+                let symbols = symbols_for_band(line_count, dim).unwrap();
+                let covered = coefficients_for_symbols(symbols, dim);
+                assert!(covered >= line_count, "dim {dim} lc {line_count}");
+                assert!(covered < line_count + dim, "dim {dim} lc {line_count}");
+            }
+        }
+    }
+
+    #[test]
+    fn symbols_for_band_uses_real_category_dims() {
+        // The dim comes from a looked-up CategoryVectorDims (2..=10), so
+        // every category's lo/hi branch yields a valid grouping.
+        for cat in 0..CATEGORY_COUNT {
+            let dims = CategoryVectorDims::for_category(CategoryIndex::new(cat).unwrap());
+            for line_count in [12u32, 20, 47] {
+                assert!(symbols_for_band(line_count, dims.lo).is_ok());
+                assert!(symbols_for_band(line_count, dims.hi).is_ok());
+            }
+        }
     }
 
     #[test]

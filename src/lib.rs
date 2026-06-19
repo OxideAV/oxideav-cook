@@ -383,10 +383,10 @@ pub use scale::{
 };
 pub use session::CallSession;
 pub use spectral::{
-    category_vector_dims, coupling_table_len, mirror_partner_index, sign_from_bit,
-    spectral_coefficient, split_coupled_coefficient, CategoryVectorDims, SpectralCodebook,
-    CATEGORY_VECTOR_DIM_HI_RVA, CATEGORY_VECTOR_DIM_LO_RVA, DEQUANT_SCALE_NONZERO,
-    DEQUANT_SCALE_RVA, MAX_SPECTRAL_CODEBOOK_INDEX, SIGN_LUT, SIGN_LUT_RVA,
+    category_vector_dims, coefficients_for_symbols, coupling_table_len, mirror_partner_index,
+    sign_from_bit, spectral_coefficient, split_coupled_coefficient, symbols_for_band,
+    CategoryVectorDims, SpectralCodebook, CATEGORY_VECTOR_DIM_HI_RVA, CATEGORY_VECTOR_DIM_LO_RVA,
+    DEQUANT_SCALE_NONZERO, DEQUANT_SCALE_RVA, MAX_SPECTRAL_CODEBOOK_INDEX, SIGN_LUT, SIGN_LUT_RVA,
     SPECTRAL_CODEBOOK_COUNT, SPECTRAL_CODEBOOK_DIMS_RVA, SPECTRAL_CODEBOOK_LENGTH_PTRS_RVA,
     SPECTRAL_CODEBOOK_VALUE_PTRS_RVA,
 };
@@ -632,6 +632,13 @@ pub enum Error {
     /// mirror-index partner `Ncoup - 1 - j` has no entry to read
     /// (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §4.2).
     CouplingTableEmpty,
+    /// A spectral-vector dimension of `0` was passed to the §3.1 symbol /
+    /// coefficient grouping arithmetic
+    /// (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §3.1: a
+    /// real per-category vector dimension is always `2..=10`, so `0`
+    /// cannot occur for a looked-up [`CategoryVectorDims`]; surfaced here
+    /// rather than dividing by zero).
+    SpectralVectorDimZero,
     /// The per-frame gain-envelope segment-count field biased to a
     /// negative count.
     ///
@@ -805,6 +812,10 @@ impl core::fmt::Display for Error {
             Error::CouplingTableEmpty => f.write_str(
                 "oxideav-cook: joint-stereo coupling table has length 0 \
                  (no mirror-index partner to read; spec/05 §4.2)",
+            ),
+            Error::SpectralVectorDimZero => f.write_str(
+                "oxideav-cook: spectral-vector dimension is 0 \
+                 (a real per-category dimension is 2..=10; spec/05 §3.1)",
             ),
             Error::GainSegmentCountUnderflow { raw } => write!(
                 f,
