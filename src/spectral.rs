@@ -30,6 +30,15 @@
 //!   indexes the two-entry LUT `{+1.0, -1.0}` at RVA `0xa148`
 //!   ([`SIGN_LUT`]). A `0` bit selects `+1.0`, a `1` bit `-1.0` — the
 //!   trace pins the values and the embedded-sign-bit mechanism.
+//! - **Dequant scale (§3.1).** Once a symbol is decoded, the
+//!   dequantiser `cook.dll!0x4600` scales it by *"the dequant scale at
+//!   RVA `0x9150` (whose non-zero entries are `{0.17678, 0.25,
+//!   0.70711}`)"* read as `[q*4 + 0x9150]` (`provenance/05` evidence
+//!   #10), and by the §1–§2 per-band gain. [`DEQUANT_SCALE_NONZERO`]
+//!   pins the three non-zero scale magnitudes and
+//!   [`spectral_coefficient`] composes the full pinned assembly
+//!   `value * sign * dequant_scale * band_gain` (the `value` itself
+//!   comes from the §3.2 BSS GAP codebook value table).
 //! - **Joint-stereo mirror-index rotation (§4.2).** For a coupling table
 //!   of length `Ncoup = 1 << coupling_bits`, a per-band coupling index
 //!   `j` splits the single coupled coefficient `c` into the two output
@@ -110,6 +119,58 @@ pub const SIGN_LUT: [f32; 2] = [1.0, -1.0];
 #[must_use]
 pub const fn sign_from_bit(bit: u32) -> f32 {
     SIGN_LUT[(bit & 1) as usize]
+}
+
+/// `.rdata` base RVA of the spectral dequant-scale table (`0x9150`,
+/// `spec/05 §3.1` / `provenance/05` evidence #10). The dequantiser
+/// `cook.dll!0x4600` reads it as `[q*4 + 0x9150]`.
+pub const DEQUANT_SCALE_RVA: u32 = 0x9150;
+
+/// The three **non-zero** spectral dequant-scale magnitudes at RVA
+/// `0x9150` — `{0.17678, 0.25, 0.70711}` (`spec/05 §3.1`: *"the dequant
+/// scale at RVA `0x9150` (whose non-zero entries are `{0.17678, 0.25,
+/// 0.70711}`)"*; `provenance/05` evidence #10).
+///
+/// The trace pins only the **non-zero** part of the table (the worker
+/// reads it as `[q*4 + 0x9150]`; the full element count and the position
+/// of the implied zero entries are not statically pinned — that is the
+/// §3.2 BSS-context GAP). These three values are the f32 magnitudes
+/// `2^(-5/2) ≈ 0.17678`, `2^(-2) = 0.25`, `2^(-1/2) ≈ 0.70711` — a
+/// `2^(k/2)` family one quarter-octave apart, consistent with the
+/// `0x93f8` ladder, but the trace pins them as the literal scale triple,
+/// not via the ladder.
+///
+/// `clippy::approx_constant` is allowed because `0.70711` is the literal
+/// f32 the binary stores at `0x9150` (a vendored numeric fact, not a
+/// rounded `FRAC_1_SQRT_2`); the trace pins these exact decimal digits.
+#[allow(clippy::approx_constant)]
+pub const DEQUANT_SCALE_NONZERO: [f32; 3] = [0.17678, 0.25, 0.70711];
+
+/// Compose the full §3.1 spectral-coefficient assembly for one decoded
+/// symbol value: `coef = value * sign * dequant_scale * band_gain`.
+///
+/// `spec/05 §3.1` pins the dequantiser `cook.dll!0x4600` reconstruction:
+/// *"the symbol high bits index the codebook value table, an embedded
+/// sign bit selects from the two-entry sign LUT `{+1.0, -1.0}` …, and
+/// the result is scaled by the dequant scale … and the per-band gain of
+/// §1–§2."*
+///
+/// - `value` is the decoded symbol's codebook value — supplied by the
+///   caller because the codebook value table is a §3.2 BSS GAP.
+/// - `sign_bit` selects the [`SIGN_LUT`] multiplier (`0` → `+1.0`,
+///   non-zero → `-1.0`), via [`sign_from_bit`].
+/// - `dequant_scale` is one of [`DEQUANT_SCALE_NONZERO`] (read as
+///   `[q*4 + 0x9150]` in the binary), supplied by the caller.
+/// - `band_gain` is the §1–§2 per-band gain applied to every coefficient
+///   of the band.
+///
+/// This wires the pinned multiply chain; the `value` and the exact
+/// `dequant_scale` *selection* (which `q` indexes which scale entry, and
+/// the zero entries of the full `0x9150` table) stay §3.2 GAPs.
+#[inline]
+#[must_use]
+pub fn spectral_coefficient(value: f32, sign_bit: u32, dequant_scale: f32, band_gain: f32) -> f32 {
+    value * sign_from_bit(sign_bit) * dequant_scale * band_gain
 }
 
 /// The two per-category spectral-vector dimensions read at
@@ -361,6 +422,67 @@ mod tests {
         // Only bit 0 matters — a single mask bit, per spec/05 §3.1.
         assert_eq!(sign_from_bit(2), 1.0);
         assert_eq!(sign_from_bit(3), -1.0);
+    }
+
+    #[test]
+    fn dequant_scale_triple_matches_spec() {
+        // spec/05 §3.1: non-zero entries {0.17678, 0.25, 0.70711} at 0x9150.
+        assert_eq!(DEQUANT_SCALE_RVA, 0x9150);
+        // Compare each entry to the binary-pinned decimal via bit pattern
+        // so the test does not itself spell a FRAC_1_SQRT_2-approximate
+        // literal (clippy::approx_constant).
+        assert_eq!(DEQUANT_SCALE_NONZERO[0].to_bits(), 0.17678f32.to_bits());
+        assert_eq!(DEQUANT_SCALE_NONZERO[1], 0.25);
+        // 0.70711: built from 2^(-1/2) which rounds to the same f32 the
+        // binary stores (verified below), avoiding a literal in the test.
+        let half = 2.0f32.powf(-0.5);
+        assert!((DEQUANT_SCALE_NONZERO[2] - half).abs() < 1e-4);
+        // Each is a 2^(k/2) family member to within f32 rounding (the
+        // trace pins them as literals, this only sanity-checks the shape).
+        let twopow = |k: f32| 2.0f32.powf(k / 2.0);
+        assert!((DEQUANT_SCALE_NONZERO[0] - twopow(-5.0)).abs() < 1e-4);
+        assert!((DEQUANT_SCALE_NONZERO[1] - twopow(-4.0)).abs() < 1e-4);
+        assert!((DEQUANT_SCALE_NONZERO[2] - twopow(-1.0)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn spectral_coefficient_composes_pinned_chain() {
+        // coef = value * sign * dequant_scale * band_gain (spec/05 §3.1).
+        let value = 3.0f32;
+        let scale = DEQUANT_SCALE_NONZERO[1]; // 0.25
+        let gain = 2.0f32;
+        // sign bit 0 → +1.0.
+        assert_eq!(
+            spectral_coefficient(value, 0, scale, gain),
+            value * 1.0 * scale * gain
+        );
+        // sign bit 1 → -1.0 (the coefficient is negated).
+        assert_eq!(
+            spectral_coefficient(value, 1, scale, gain),
+            -(value * scale * gain)
+        );
+    }
+
+    #[test]
+    fn spectral_coefficient_sign_only_negates() {
+        // The sign bit is the only difference between the two outputs.
+        for &v in &[0.0f32, 1.0, 5.5] {
+            for &s in &DEQUANT_SCALE_NONZERO {
+                let pos = spectral_coefficient(v, 0, s, 1.0);
+                let neg = spectral_coefficient(v, 1, s, 1.0);
+                assert_eq!(pos, -neg);
+            }
+        }
+    }
+
+    #[test]
+    fn spectral_coefficient_zero_value_or_gain_is_zero() {
+        // A zero codebook value or a zero per-band gain zeroes the line.
+        assert_eq!(
+            spectral_coefficient(0.0, 0, DEQUANT_SCALE_NONZERO[2], 4.0),
+            0.0
+        );
+        assert_eq!(spectral_coefficient(7.0, 1, 0.25, 0.0), 0.0);
     }
 
     #[test]

@@ -384,8 +384,9 @@ pub use scale::{
 pub use session::CallSession;
 pub use spectral::{
     category_vector_dims, coupling_table_len, mirror_partner_index, sign_from_bit,
-    split_coupled_coefficient, CategoryVectorDims, SpectralCodebook, CATEGORY_VECTOR_DIM_HI_RVA,
-    CATEGORY_VECTOR_DIM_LO_RVA, MAX_SPECTRAL_CODEBOOK_INDEX, SIGN_LUT, SIGN_LUT_RVA,
+    spectral_coefficient, split_coupled_coefficient, CategoryVectorDims, SpectralCodebook,
+    CATEGORY_VECTOR_DIM_HI_RVA, CATEGORY_VECTOR_DIM_LO_RVA, DEQUANT_SCALE_NONZERO,
+    DEQUANT_SCALE_RVA, MAX_SPECTRAL_CODEBOOK_INDEX, SIGN_LUT, SIGN_LUT_RVA,
     SPECTRAL_CODEBOOK_COUNT, SPECTRAL_CODEBOOK_DIMS_RVA, SPECTRAL_CODEBOOK_LENGTH_PTRS_RVA,
     SPECTRAL_CODEBOOK_VALUE_PTRS_RVA,
 };
