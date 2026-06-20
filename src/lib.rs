@@ -376,7 +376,9 @@ pub use reciprocal::{
     RECIPROCAL_RUN_LEN, RECIPROCAL_TABLE_END_RVA, RECIPROCAL_TABLE_RVA,
     RECIPROCAL_TRAILING_ZERO_INDEX,
 };
-pub use reconstruct::{reconstruct_band, reconstruct_spectrum, BandReconstruction};
+pub use reconstruct::{
+    decouple_stereo, reconstruct_band, reconstruct_spectrum, BandReconstruction, StereoSpectra,
+};
 pub use scale::{
     pow2_scale_for_exponent, sqrt2_scale_for_exponent, ScaleExponent,
     POW2_SUBPOINTER_ELEMENT_OFFSET, POW2_SUBPOINTER_FIRST_EXPONENT, SCALE_EXPONENT_BIAS,

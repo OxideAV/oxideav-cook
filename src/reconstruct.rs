@@ -30,7 +30,7 @@
 //! a coherent **band → spectrum** pipeline that produces the
 //! **inverse-transform input array** — the iMDCT feed — *given* the
 //! entropy-decoded values. The stereo decouple (§4.2) is layered on top in
-//! `decouple_stereo`.
+//! [`decouple_stereo`].
 //!
 //! Splitting the decode this way keeps the wall intact: the BSS-built
 //! codebook bytes are the caller's input (a §3.2 GAP a future Validator
@@ -51,23 +51,33 @@
 //! - [`reconstruct_spectrum`] — drive [`reconstruct_band`] over every
 //!   subband of a [`crate::subband::SubbandGeometry`], producing one
 //!   channel's complete iMDCT-input spectrum.
+//! - [`decouple_stereo`] — split a single coupled spectrum into two
+//!   per-channel spectra over a contiguous coupling-band range by the §4.2
+//!   mirror-index rotation `(out0, out1) = c * (coef[j], coef[Ncoup-1-j])`
+//!   (via [`crate::spectral::split_coupled_coefficient`]), one rotation
+//!   index `j` per coupling band (§4.1).
+//! - [`StereoSpectra`] — the two channel spectra a decouple produces.
 //!
 //! ## What stays a GAP (caller-supplied inputs)
 //!
 //! The per-symbol codebook **values** (§3.2 BSS GAP), the **sign bits**
-//! and per-band **quantiser indices** the VLC walk reads are all caller
-//! inputs — this module never fabricates them. It wires only the trace's
-//! pinned reconstruction arithmetic over those inputs.
+//! and per-band **quantiser indices** the VLC walk reads, and the
+//! per-coupling-width **rotation coefficient values** (§4.3 BSS GAP) are
+//! all caller inputs — this module never fabricates them. It wires only
+//! the trace's pinned reconstruction arithmetic over those inputs.
 //!
 //! ## Wall-respect note
 //!
-//! Every fact here is anchored to `spec/05` §2.1 / §2.2 / §3.1 and the
-//! matching provenance evidence; the band → coefficient-range geometry and
-//! the dequant multiply chain are the trace's own. No BSS-resident bytes
-//! are guessed.
+//! Every fact here is anchored to `spec/05` §2.1 / §2.2 / §3.1 / §4.2 and
+//! the matching provenance evidence; the band → coefficient-range
+//! geometry, the dequant multiply chain and the mirror-index rotation are
+//! the trace's own. No BSS-resident bytes are guessed.
 
 use crate::{
-    category::CategoryIndex, spectral::spectral_coefficient, subband::SubbandGeometry, Error,
+    category::CategoryIndex,
+    spectral::{spectral_coefficient, split_coupled_coefficient},
+    subband::SubbandGeometry,
+    Error,
 };
 
 /// The per-band inputs the §3.1 dequant fill consumes for one subband.
@@ -189,6 +199,97 @@ pub fn reconstruct_spectrum(
         reconstruct_band(&mut spectrum, geometry, band as u32, recon)?;
     }
     Ok(spectrum)
+}
+
+/// The two per-channel spectra a §4 stereo decouple produces.
+///
+/// Both are the same length as the coupled input spectrum. `ch0` is the
+/// `coef[j]` branch, `ch1` the partner `coef[Ncoup-1-j]` branch of the
+/// §4.2 mirror-index rotation; lines outside the coupling-band range are
+/// left at their pre-fill value (`0.0` for a freshly-built pair).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StereoSpectra {
+    /// Channel 0 spectrum — the `coef[j]` branch of the §4.2 rotation.
+    pub ch0: Vec<f32>,
+    /// Channel 1 spectrum — the `coef[Ncoup-1-j]` branch of the rotation.
+    pub ch1: Vec<f32>,
+}
+
+/// Split one coupled (down-mixed) spectrum into two per-channel spectra
+/// over a contiguous coupling-band range by the §4.2 mirror-index
+/// rotation.
+///
+/// `spec/05` §4 pins the stereo body: the backend decodes a single
+/// coupled spectrum and *"splits each coupling band into left/right by a
+/// per-band rotation"*. §4.1 records one coupling/rotation index `j` per
+/// coupling band, and §4.2 the closed form
+/// `(out0, out1) = c * (coef[j], coef[Ncoup-1-j])` over that band's
+/// coefficient range.
+///
+/// - `coupled` is the single coupled spectrum (one channel's worth of
+///   §3.1-reconstructed coefficients).
+/// - `geometry` supplies each subband's §2.1 coefficient range.
+/// - `coupling_bands` is the contiguous subband range `[first..last)` the
+///   coupled region spans (§4.1; derived from the per-channel subband
+///   count and a per-flavor coupling start — both caller inputs, since the
+///   coupling start is a per-flavor field, not pinned numerically here).
+/// - `indices` is one rotation index `j` per coupling band (length ==
+///   `coupling_bands.len()`).
+/// - `coef` is the per-coupling-width rotation coefficient table of length
+///   `Ncoup` (a §4.3 BSS GAP supplies its values).
+///
+/// Every coefficient `c` of every coupling band is split by that band's
+/// index: `ch0[line] = c * coef[j]`, `ch1[line] = c * coef[Ncoup-1-j]`.
+/// Lines outside `coupling_bands` are left `0.0` (the function fills only
+/// the pinned coupled region; the non-coupled remainder is the caller's
+/// to populate, since the trace does not pin its L/R treatment).
+///
+/// # Errors
+///
+/// - [`Error::CouplingIndexCountMismatch`] when `indices.len()` is not the
+///   number of coupling bands.
+/// - [`Error::BitAllocAxisOutOfRange`] when a coupling band is past the
+///   geometry's subband count, or a band's coefficient range exceeds
+///   `coupled.len()`.
+/// - [`Error::CouplingTableEmpty`] / [`Error::CouplingIndexOutOfRange`]
+///   from [`split_coupled_coefficient`] when `coef` is empty or an index
+///   `j >= Ncoup`.
+pub fn decouple_stereo(
+    coupled: &[f32],
+    geometry: &SubbandGeometry,
+    coupling_bands: core::ops::Range<u32>,
+    indices: &[u32],
+    coef: &[f32],
+) -> Result<StereoSpectra, Error> {
+    let band_count = coupling_bands.end.saturating_sub(coupling_bands.start);
+    if indices.len() as u32 != band_count {
+        return Err(Error::CouplingIndexCountMismatch {
+            coupling_bands: band_count,
+            got: indices.len(),
+        });
+    }
+    let mut ch0 = vec![0.0f32; coupled.len()];
+    let mut ch1 = vec![0.0f32; coupled.len()];
+    for (n, band) in coupling_bands.clone().enumerate() {
+        let range = geometry.line_range(band)?;
+        let end = range.end as usize;
+        if end > coupled.len() {
+            return Err(Error::BitAllocAxisOutOfRange {
+                got: band.min(u32::from(u8::MAX)) as u8,
+            });
+        }
+        let j = indices[n];
+        let start = range.start as usize;
+        let src = &coupled[start..end];
+        let dst0 = &mut ch0[start..end];
+        let dst1 = &mut ch1[start..end];
+        for ((c, o0), o1) in src.iter().zip(dst0.iter_mut()).zip(dst1.iter_mut()) {
+            let (l, r) = split_coupled_coefficient(*c, j, coef)?;
+            *o0 = l;
+            *o1 = r;
+        }
+    }
+    Ok(StereoSpectra { ch0, ch1 })
 }
 
 #[cfg(test)]
@@ -371,5 +472,118 @@ mod tests {
                 got: 5
             }
         );
+    }
+
+    // ----- §4 stereo decouple -----
+
+    #[test]
+    fn decouple_pans_coupled_spectrum_per_band() {
+        // A 20-subband geometry; couple bands [2..6). Build a coupled
+        // spectrum of distinct values per line, and a normalised-pan coef
+        // pair table {1.0, 0.0} (Ncoup = 2): index 0 steers all energy to
+        // ch0, index 1 to ch1.
+        let geom = SubbandGeometry::new(20).unwrap();
+        let total = geom.total_coded_lines() as usize;
+        let coupled: Vec<f32> = (0..total).map(|i| (i + 1) as f32).collect();
+        let coef = [1.0f32, 0.0];
+        // Coupling bands 2,3,4,5; indices steer 0,1,0,1.
+        let indices = [0u32, 1, 0, 1];
+        let stereo = decouple_stereo(&coupled, &geom, 2..6, &indices, &coef).unwrap();
+        assert_eq!(stereo.ch0.len(), total);
+        assert_eq!(stereo.ch1.len(), total);
+        for (n, band) in (2u32..6).enumerate() {
+            let range = geom.line_range(band).unwrap();
+            let (lo, hi) = (range.start as usize, range.end as usize);
+            let j = indices[n];
+            for ((c, &o0), &o1) in coupled[lo..hi]
+                .iter()
+                .zip(&stereo.ch0[lo..hi])
+                .zip(&stereo.ch1[lo..hi])
+            {
+                if j == 0 {
+                    // coef[0]=1 -> ch0=c, coef[Ncoup-1-0]=coef[1]=0 -> ch1=0.
+                    assert_eq!(o0, *c);
+                    assert_eq!(o1, 0.0);
+                } else {
+                    // coef[1]=0 -> ch0=0, coef[Ncoup-1-1]=coef[0]=1 -> ch1=c.
+                    assert_eq!(o0, 0.0);
+                    assert_eq!(o1, *c);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decouple_leaves_non_coupled_lines_zero() {
+        // Lines outside the coupling-band range stay 0.0 in both channels.
+        let geom = SubbandGeometry::new(20).unwrap();
+        let total = geom.total_coded_lines() as usize;
+        let coupled: Vec<f32> = (0..total).map(|i| (i + 1) as f32).collect();
+        let coef = [1.0f32, 1.0];
+        let stereo = decouple_stereo(&coupled, &geom, 5..8, &[0, 0, 0], &coef).unwrap();
+        // Band 0 (line 0) is below the coupling range — untouched.
+        let r0 = geom.line_range(0).unwrap();
+        let (lo, hi) = (r0.start as usize, r0.end as usize);
+        for (&o0, &o1) in stereo.ch0[lo..hi].iter().zip(&stereo.ch1[lo..hi]) {
+            assert_eq!(o0, 0.0);
+            assert_eq!(o1, 0.0);
+        }
+    }
+
+    #[test]
+    fn decouple_centre_index_splits_equally() {
+        // An odd-length coef table: the centre index is its own mirror
+        // partner, so both channels read the same coef -> equal split.
+        let geom = SubbandGeometry::new(20).unwrap();
+        let total = geom.total_coded_lines() as usize;
+        let coupled = vec![2.0f32; total];
+        let coef = [1.0f32, std::f32::consts::FRAC_1_SQRT_2, 0.0]; // Ncoup=3.
+                                                                   // One coupling band [3..4); centre index 1 partners with itself.
+        let stereo = decouple_stereo(&coupled, &geom, 3..4, &[1], &coef).unwrap();
+        let range = geom.line_range(3).unwrap();
+        let (lo, hi) = (range.start as usize, range.end as usize);
+        for (&o0, &o1) in stereo.ch0[lo..hi].iter().zip(&stereo.ch1[lo..hi]) {
+            assert_eq!(o0, o1);
+            assert_eq!(o0, 2.0 * std::f32::consts::FRAC_1_SQRT_2);
+        }
+    }
+
+    #[test]
+    fn decouple_rejects_index_count_mismatch() {
+        let geom = SubbandGeometry::new(20).unwrap();
+        let coupled = vec![1.0f32; geom.total_coded_lines() as usize];
+        let coef = [1.0f32, 0.0];
+        // 4 coupling bands [2..6) but only 2 indices.
+        assert_eq!(
+            decouple_stereo(&coupled, &geom, 2..6, &[0, 1], &coef).unwrap_err(),
+            Error::CouplingIndexCountMismatch {
+                coupling_bands: 4,
+                got: 2
+            }
+        );
+    }
+
+    #[test]
+    fn decouple_rejects_bad_coupling_index() {
+        let geom = SubbandGeometry::new(20).unwrap();
+        let coupled = vec![1.0f32; geom.total_coded_lines() as usize];
+        let coef = [1.0f32, 0.0]; // Ncoup = 2.
+                                  // Index 5 >= Ncoup=2.
+        assert_eq!(
+            decouple_stereo(&coupled, &geom, 3..4, &[5], &coef).unwrap_err(),
+            Error::CouplingIndexOutOfRange { got: 5, ncoup: 2 }
+        );
+    }
+
+    #[test]
+    fn decouple_rejects_out_of_range_coupling_band() {
+        let geom = SubbandGeometry::new(20).unwrap();
+        let coupled = vec![1.0f32; geom.total_coded_lines() as usize];
+        let coef = [1.0f32, 0.0];
+        // Band 20 is past the 20-subband geometry.
+        assert!(matches!(
+            decouple_stereo(&coupled, &geom, 20..21, &[0], &coef),
+            Err(Error::BitAllocAxisOutOfRange { .. })
+        ));
     }
 }
