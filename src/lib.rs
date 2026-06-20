@@ -356,7 +356,10 @@ pub use flavor_property::{
     FlavorPropertyId, FlavorPropertyKind, FLAVOR_PROPERTY_ID_COUNT, FLAVOR_PROPERTY_INTEGER_LEN,
     FLAVOR_PROPERTY_JUMP_TABLE_RVA, MAX_FLAVOR_PROPERTY_ID, STRING_PROPERTY_IDS,
 };
-pub use frame::{decode_frame_body, frame_body_prefix, FrameWalk};
+pub use frame::{
+    decode_frame_body, frame_body_prefix, reconstruct_frame_spectrum, FrameSpectrum, FrameWalk,
+    StereoCoupling,
+};
 pub use gain::{
     apply_gain_blocks, apply_gain_envelope, expand_gain_envelope, gain_factor_for_index,
     read_segment_count, GainSegment, GAIN_POS_WINDOW, SEGMENT_COUNT_BIAS, SEGMENT_COUNT_FIELD_BITS,
@@ -666,6 +669,15 @@ pub enum Error {
     /// for a real frame — surfaced here rather than producing an empty
     /// profile.
     GainBlockCountZero,
+    /// A stereo frame reconstruction (`channels == 2`) was driven without
+    /// the §4 coupling inputs.
+    ///
+    /// `spec/05` §4: the stereo body decodes a single coupled spectrum and
+    /// splits it into left/right by the per-coupling-band rotation; that
+    /// split needs the coupling-band range, the per-band rotation indices
+    /// and the `coef` table (a §4.3 BSS GAP). A stereo route with no
+    /// coupling inputs cannot run the decouple — surfaced here.
+    StereoCouplingMissing,
     /// A per-band spectral reconstruction was supplied a decoded-value
     /// slice whose length does not match the band's coded line count.
     ///
@@ -871,6 +883,10 @@ impl core::fmt::Display for Error {
             Error::GainBlockCountZero => f.write_str(
                 "oxideav-cook: gain-envelope application asked to expand over 0 \
                  sub-blocks (spec/05 §1.2 expands one factor per sub-block)",
+            ),
+            Error::StereoCouplingMissing => f.write_str(
+                "oxideav-cook: stereo frame reconstruction (channels == 2) requires \
+                 the §4 coupling inputs (band range, rotation indices, coef table)",
             ),
             Error::BandValueCountMismatch { line_count, got } => write!(
                 f,
