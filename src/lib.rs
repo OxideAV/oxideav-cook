@@ -322,6 +322,7 @@ pub mod init;
 pub mod mdct;
 pub mod quantiser;
 pub mod reciprocal;
+pub mod reconstruct;
 pub mod scale;
 pub mod session;
 pub mod spectral;
@@ -375,6 +376,7 @@ pub use reciprocal::{
     RECIPROCAL_RUN_LEN, RECIPROCAL_TABLE_END_RVA, RECIPROCAL_TABLE_RVA,
     RECIPROCAL_TRAILING_ZERO_INDEX,
 };
+pub use reconstruct::{reconstruct_band, reconstruct_spectrum, BandReconstruction};
 pub use scale::{
     pow2_scale_for_exponent, sqrt2_scale_for_exponent, ScaleExponent,
     POW2_SUBPOINTER_ELEMENT_OFFSET, POW2_SUBPOINTER_FIRST_EXPONENT, SCALE_EXPONENT_BIAS,
@@ -662,6 +664,48 @@ pub enum Error {
     /// for a real frame — surfaced here rather than producing an empty
     /// profile.
     GainBlockCountZero,
+    /// A per-band spectral reconstruction was supplied a decoded-value
+    /// slice whose length does not match the band's coded line count.
+    ///
+    /// `spec/05` §3 / §2.1: each subband occupies a half-open
+    /// coefficient range `[start_line[band] .. start_line[band+1])`; the
+    /// dequantiser fills exactly `line_count` coefficients for the band.
+    /// The post-entropy reconstruction takes the band's decoded symbol
+    /// values as input (a §3.2 BSS GAP supplies them); this guards a
+    /// caller that hands a value slice of the wrong width.
+    BandValueCountMismatch {
+        /// The band's coded line count (`line_count[band]`).
+        line_count: u32,
+        /// The number of decoded values the caller supplied.
+        got: usize,
+    },
+    /// A full-spectrum reconstruction was supplied a per-band category
+    /// map whose length does not match the stream's subband count.
+    ///
+    /// `spec/05` §2: the category-assignment pass produces one category
+    /// per coded subband; the reconstruction drives the per-band fill over
+    /// every subband of the [`crate::subband::SubbandGeometry`]. This
+    /// guards a caller whose category map (or per-band value table) is not
+    /// `subband_count` long.
+    SpectrumBandCountMismatch {
+        /// The stream's coded subband count.
+        subband_count: u32,
+        /// The number of per-band entries the caller supplied.
+        got: usize,
+    },
+    /// A stereo decouple was supplied a coupling-index slice whose length
+    /// does not match the number of coupling bands.
+    ///
+    /// `spec/05` §4.1: one coupling/rotation index `j` is read per
+    /// coupling band; the decouple splits each coupling band's coupled
+    /// coefficient with its index. This guards a caller whose index slice
+    /// width disagrees with the coupling-band count.
+    CouplingIndexCountMismatch {
+        /// The number of coupling bands the geometry spans.
+        coupling_bands: u32,
+        /// The number of coupling indices the caller supplied.
+        got: usize,
+    },
     /// The backend per-frame walk reached the §3 spectral-VLC dequant
     /// step, whose seven Huffman codebooks' per-symbol code/length bytes
     /// are **runtime-built in `.data` BSS at init** and are not present
@@ -825,6 +869,24 @@ impl core::fmt::Display for Error {
             Error::GainBlockCountZero => f.write_str(
                 "oxideav-cook: gain-envelope application asked to expand over 0 \
                  sub-blocks (spec/05 §1.2 expands one factor per sub-block)",
+            ),
+            Error::BandValueCountMismatch { line_count, got } => write!(
+                f,
+                "oxideav-cook: per-band reconstruction value count {got} does not \
+                 match the band's coded line count {line_count} (spec/05 §3/§2.1)"
+            ),
+            Error::SpectrumBandCountMismatch { subband_count, got } => write!(
+                f,
+                "oxideav-cook: spectrum per-band entry count {got} does not match \
+                 the stream's subband count {subband_count} (spec/05 §2)"
+            ),
+            Error::CouplingIndexCountMismatch {
+                coupling_bands,
+                got,
+            } => write!(
+                f,
+                "oxideav-cook: coupling index count {got} does not match the \
+                 coupling-band count {coupling_bands} (spec/05 §4.1)"
             ),
             Error::SpectralCodebookBytesUnavailable => f.write_str(
                 "oxideav-cook: backend frame walk reached the §3 spectral-VLC step; \
