@@ -47,6 +47,26 @@ numeric facts tables + real-stream validation).
   *assignment* loop (`0x8f38` LUT, not extracted), the §3.2 codebook
   bytes, the §4.3 coupling coefficients, and the §5 iMDCT kernel stay
   recorded DOCS-GAPs past the blocker.
+- **Post-entropy spectral reconstruction → iMDCT input** —
+  [`reconstruct`](src/reconstruct.rs) wires the trace's pinned dequant
+  arithmetic *downstream* of the §3.2 entropy blocker (the codebook bytes
+  stay the caller's GAP-sourced input).
+  [`reconstruct_band`](src/reconstruct.rs) fills one subband's §2.1
+  coefficient range with the §3.1 assembly
+  `value * sign * dequant_scale * band_gain`;
+  [`reconstruct_spectrum`](src/reconstruct.rs) drives that gap-free over
+  every subband of a [`SubbandGeometry`](src/subband.rs) to build one
+  channel's iMDCT-input spectrum. [`decouple_stereo`](src/reconstruct.rs)
+  splits a single coupled spectrum into a
+  [`StereoSpectra`](src/reconstruct.rs) pair over a contiguous
+  coupling-band range by the §4.2 mirror rotation
+  `(out0, out1) = c * (coef[j], coef[Ncoup-1-j])` — one rotation index per
+  coupling band (§4.1). [`reconstruct_frame_spectrum`](src/frame.rs) ties
+  these into one channel-routed [`FrameSpectrum`](src/frame.rs) (mono
+  spectrum or stereo pair) — the iMDCT feed — given the entropy-decoded
+  per-band inputs and (for stereo) the §4 [`StereoCoupling`](src/frame.rs)
+  inputs. Every BSS-resident input (§3.2 codebook values/signs, §4.3
+  coupling `coef`) is caller-supplied; no bytes are guessed.
 - **RealAudio codec SPI export surface** — [`spi`](src/spi.rs) types the
   20 named exports (ordinals 1–20) of `cook.dll` spec/01 §2 pins, behind
   the exhaustive ordinal-ordered [`SpiExport`](src/spi.rs) enum.
@@ -652,8 +672,15 @@ wired in [`spectral`](src/spectral.rs), and the §0–§3 prefix is now
 **assembled into the running real-decode walk** by
 [`frame`](src/frame.rs) (the bit-reader state machine, the
 gain-envelope segment-count read, and the §2.1 subband-geometry build).
-**What is not yet wired** is the bit-level entropy descent past the §3
-blocker and three **runtime-built-in-BSS** GAPs the trace explicitly
+The entire **post-entropy reconstruction arithmetic** — the §3.1 dequant
+band fill, the gap-free spectrum assembly over the §2.1 geometry, the §4.2
+stereo decouple, and their channel-routed integration into a `FrameSpectrum`
+iMDCT feed — is also wired in [`reconstruct`](src/reconstruct.rs) /
+[`frame`](src/frame.rs), consuming the entropy-decoded values as caller
+inputs so a future Validator round that dumps the BSS codebooks can feed
+them straight in. **What is not yet wired** is the bit-level entropy descent
+past the §3 blocker (the step that *produces* those decoded values) and
+three **runtime-built-in-BSS** GAPs the trace explicitly
 leaves open (`docs/audio/cook/spec/05` §6): the per-symbol spectral
 codebook code/length **bytes** (§3.2, the precise sub-step the walk
 stops at as docs-gap #1775), the per-coupling-width rotation

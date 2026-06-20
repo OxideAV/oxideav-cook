@@ -8,6 +8,29 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `reconstruct` module — the **post-entropy spectral reconstruction**
+  pipeline (`spec/05` §2.1 / §3.1 / §4.2), wired *downstream* of the §3.2
+  BSS codebook blocker (the entropy read stays the GAP). `BandReconstruction`
+  bundles one subband's decoded values + sign bits + dequant scale + gain;
+  `reconstruct_band` fills the band's §2.1 coefficient range with the §3.1
+  assembly `value * sign * dequant_scale * band_gain`; `reconstruct_spectrum`
+  drives that gap-free over every subband of a `SubbandGeometry` to produce
+  one channel's iMDCT-input spectrum. `decouple_stereo` (+`StereoSpectra`)
+  splits a single coupled spectrum into two channel spectra over a
+  contiguous coupling-band range by the §4.2 mirror rotation `(out0, out1) =
+  c * (coef[j], coef[Ncoup-1-j])` — one rotation index per coupling band
+  (§4.1). All BSS-resident inputs (codebook values/signs §3.2, coupling
+  `coef` §4.3) stay caller-supplied; no bytes guessed. New typed errors
+  `BandValueCountMismatch`, `SpectrumBandCountMismatch`,
+  `CouplingIndexCountMismatch`. 13 new tests.
+- `frame` **post-entropy → iMDCT-input integration** —
+  `reconstruct_frame_spectrum(geometry, bands, channels, coupling)` ties the
+  reconstruction modules into a single channel-routed stage: mono →
+  `FrameSpectrum::Mono` of `reconstruct_spectrum`; stereo →
+  `FrameSpectrum::Stereo` of the §4 `decouple_stereo`. `StereoCoupling`
+  bundles the §4 coupling inputs; `Error::StereoCouplingMissing` guards a
+  stereo route with no coupling inputs. The §3.2 blocker still gates the
+  entropy read (`decode_frame_body` unchanged). 4 new tests.
 - `quantiser` **full §2.2 closed form** — `quantiser_level(&params, q)` /
   `CategoryParameters::quantiser_level` compose the complete spec/05 §2.2
   per-band quantiser `level = clip(round(bias[cat] + |q|*step[cat] /
