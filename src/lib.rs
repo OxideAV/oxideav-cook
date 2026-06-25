@@ -322,6 +322,7 @@ pub mod gain;
 pub mod index_decomp;
 pub mod init;
 pub mod mdct;
+pub mod output_stage;
 pub mod quantiser;
 pub mod reciprocal;
 pub mod reconstruct;
@@ -379,6 +380,11 @@ pub use init::{DecodeConfig, Descriptor, PCM_BYTES_PER_SAMPLE, RADECODE_FLAGS_DE
 pub use mdct::{
     mdct_half_window, MdctWindowLength, MDCT_WINDOW_COUNT, MDCT_WINDOW_TABLE_END_RVA,
     MDCT_WINDOW_TABLE_RVA,
+};
+pub use output_stage::{
+    apply_window, overlap_add, overlap_add_weighted, windowed, OVERLAP_MIX_WEIGHT_HALF,
+    OVERLAP_MIX_WEIGHT_HALF_RVA, OVERLAP_MIX_WEIGHT_THREE_QUARTER,
+    OVERLAP_MIX_WEIGHT_THREE_QUARTER_RVA,
 };
 pub use quantiser::{
     band_gain_magnitude, clip_quantiser_index, quantiser_level, QUANTISER_DIVISOR,
@@ -753,6 +759,27 @@ pub enum Error {
         /// The supplied reciprocal-table index.
         got: u8,
     },
+    /// A time-domain block passed to the §5 windowing stage did not match
+    /// the selected MDCT window length
+    /// (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §5: each
+    /// block is windowed by one of the five stored Princen-Bradley
+    /// windows of length 3/7/15/31/64).
+    OutputWindowLengthMismatch {
+        /// The supplied block length.
+        got: usize,
+        /// The selected window length.
+        window: usize,
+    },
+    /// The two contributions passed to the §5 overlap-add differed in
+    /// length (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §5:
+    /// the output is the per-sample sum of two equal-length windowed
+    /// blocks).
+    OverlapAddLengthMismatch {
+        /// Length of the first (previous-block) contribution.
+        a: usize,
+        /// Length of the second (current-block) contribution.
+        b: usize,
+    },
 }
 
 impl core::fmt::Display for Error {
@@ -935,6 +962,15 @@ impl core::fmt::Display for Error {
                 f,
                 "oxideav-cook: reciprocal-table index {got} out of range \
                  (0x8fac has 7 entries, indices 0..=6)"
+            ),
+            Error::OutputWindowLengthMismatch { got, window } => write!(
+                f,
+                "oxideav-cook: output-stage block length {got} does not match the selected \
+                 MDCT window length {window}"
+            ),
+            Error::OverlapAddLengthMismatch { a, b } => write!(
+                f,
+                "oxideav-cook: overlap-add contributions differ in length ({a} vs {b})"
             ),
         }
     }
