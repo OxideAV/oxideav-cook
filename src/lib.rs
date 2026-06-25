@@ -382,8 +382,8 @@ pub use mdct::{
     MDCT_WINDOW_TABLE_RVA,
 };
 pub use output_stage::{
-    apply_window, overlap_add, overlap_add_weighted, windowed, OVERLAP_MIX_WEIGHT_HALF,
-    OVERLAP_MIX_WEIGHT_HALF_RVA, OVERLAP_MIX_WEIGHT_THREE_QUARTER,
+    apply_window, overlap_add, overlap_add_weighted, window_and_gain, windowed,
+    OVERLAP_MIX_WEIGHT_HALF, OVERLAP_MIX_WEIGHT_HALF_RVA, OVERLAP_MIX_WEIGHT_THREE_QUARTER,
     OVERLAP_MIX_WEIGHT_THREE_QUARTER_RVA,
 };
 pub use quantiser::{

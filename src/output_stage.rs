@@ -177,6 +177,42 @@ pub fn overlap_add_weighted(
         .collect())
 }
 
+/// Window then gain-scale one iMDCT-output block — the post-transform
+/// per-block sequence of `spec/05` §5 *before* the overlap-add
+/// (windowing → §1 gain envelope).
+///
+/// `spec/05` §5: *"windowed with one of the five Princen-Bradley windows
+/// …, gain-scaled by the §1 envelope, and overlap-added into the
+/// output."* This composes the two pinned per-block operations in that
+/// order: [`apply_window`] (the stored Princen-Bradley window) then the
+/// §1.2 [`crate::gain::apply_gain_blocks`] (the per-sub-block gain
+/// profile). The result is the windowed, gain-scaled block ready for the
+/// overlap-add with the neighbouring block.
+///
+/// - `block` is the iMDCT kernel's time-domain output (a caller input —
+///   the kernel itself is the `0xa1b0` GAP).
+/// - `window` selects the stored Princen-Bradley window; `block.len()`
+///   must match its length.
+/// - `gain_blocks` is the expanded per-sub-block gain profile (from
+///   [`crate::gain::expand_gain_envelope`]); an empty profile is the §1.1
+///   flat-envelope case the caller passes as `&[1.0]`.
+///
+/// # Errors
+///
+/// - [`Error::OutputWindowLengthMismatch`] when `block.len()` differs from
+///   the window length.
+/// - [`Error::GainBlockCountZero`] when `gain_blocks` is empty.
+pub fn window_and_gain(
+    block: &[f32],
+    window: MdctWindowLength,
+    gain_blocks: &[f32],
+) -> Result<Vec<f32>, Error> {
+    let mut out = block.to_vec();
+    apply_window(&mut out, window)?;
+    crate::gain::apply_gain_blocks(&mut out, gain_blocks)?;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +333,43 @@ mod tests {
                 assert!((id - 1.0).abs() < 1e-3, "TDAC {win:?} k {k} = {id}");
             }
         }
+    }
+
+    #[test]
+    fn window_and_gain_composes_window_then_gain() {
+        // A unit block windowed then scaled by a flat gain of 2.0 equals
+        // 2 * window.
+        let win = MdctWindowLength::L7;
+        let w = mdct_half_window(win).to_vec();
+        let block = vec![1.0f32; w.len()];
+        let out = window_and_gain(&block, win, &[2.0]).unwrap();
+        for k in 0..w.len() {
+            assert!((out[k] - 2.0 * w[k]).abs() < 1e-6, "k {k}");
+        }
+    }
+
+    #[test]
+    fn window_and_gain_unit_gain_equals_window() {
+        // Flat unity gain leaves the windowed block unchanged.
+        let win = MdctWindowLength::L3;
+        let block = vec![2.0f32, 3.0, 4.0];
+        let out = window_and_gain(&block, win, &[1.0]).unwrap();
+        let direct = windowed(&block, win).unwrap();
+        assert_eq!(out, direct);
+    }
+
+    #[test]
+    fn window_and_gain_rejects_bad_inputs() {
+        let win = MdctWindowLength::L3;
+        // Wrong block length.
+        assert_eq!(
+            window_and_gain(&[1.0, 2.0], win, &[1.0]).unwrap_err(),
+            Error::OutputWindowLengthMismatch { got: 2, window: 3 }
+        );
+        // Empty gain profile.
+        assert_eq!(
+            window_and_gain(&[1.0, 2.0, 3.0], win, &[]).unwrap_err(),
+            Error::GainBlockCountZero
+        );
     }
 }
