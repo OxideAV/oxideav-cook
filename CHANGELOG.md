@@ -8,6 +8,33 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `index_decomp` module — the §2.2 **division-free quantiser-index
+  decomposition** (`cook.dll!0x44a0`, `spec/05` §2.2, `provenance/05`
+  evidence #7, `tables/README.md` row `0x8fac`). The seven Q-format
+  reciprocals `INDEX_RECIP` are `ceil(2^20 / n)` of the per-category radices
+  `INDEX_RADIX = {14,10,7,5,4,3,2}`; `reciprocal_quotient` applies the pinned
+  `(idx*recip)>>0x14` multiply-shift and `decompose_index` returns the
+  `(idx/n, idx mod n)` `(codebook-symbol, in-symbol-position)` pair without a
+  division. Exact field-decomposition role + §3.2 BSS codebook bytes stay
+  GAP. New error `IndexRecipOutOfRange`. 7 tests.
+- `coupling_control` module — the §4.1 **joint-stereo coupling-control
+  read** (`cook.dll!0x3d10`, `spec/05` §4.1, `provenance/05` evidence
+  #12/#13). The leading flag bit selects `CouplingReadMode` (set → VLC over
+  the §3.2 BSS codebooks blocker; clear → fixed-width `read-n-bits(+0x1c)`),
+  the fixed-width branch (`read_fixed_coupling_index`) fully implemented and
+  yielding `j` in `0..Ncoup`; `read_coupling_index` surfaces
+  `SpectralCodebookBytesUnavailable` for the VLC branch. Coupling-band
+  boundary derivation stays GAP. 8 tests.
+- `output_stage` module — the §5 **inverse-transform output stage**
+  (windowing + overlap-add; `spec/05` §5, spec/01 §5.1, `provenance/05`
+  evidence #14). `apply_window`/`windowed` multiply a block by the stored
+  Princen-Bradley window (TDAC-validated); `overlap_add` /
+  `overlap_add_weighted` combine two windowed contributions with the L/R mix
+  weights `OVERLAP_MIX_WEIGHT_HALF` (`0.5`, `0x8c0c`) /
+  `OVERLAP_MIX_WEIGHT_THREE_QUARTER` (`0.75`, `0x8c10`); `window_and_gain`
+  composes window → §1 gain. The iMDCT kernel (`0xa1b0` GAP) is a caller
+  input. New errors `OutputWindowLengthMismatch`, `OverlapAddLengthMismatch`.
+  13 tests.
 - `reconstruct` module — the **post-entropy spectral reconstruction**
   pipeline (`spec/05` §2.1 / §3.1 / §4.2), wired *downstream* of the §3.2
   BSS codebook blocker (the entropy read stays the GAP). `BandReconstruction`

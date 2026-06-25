@@ -627,6 +627,70 @@ numeric facts tables + real-stream validation).
   + gain index, via the §3.2 BSS-gated VLC walk `cook.dll!0x3a50`) stay a
   recorded DOCS-GAP — the application closed form is pinned, reading the
   segment list off the bitstream is not.
+- **Division-free quantiser-index decomposition (§2.2)** —
+  [`index_decomp`](src/index_decomp.rs) wires the per-band dequant worker
+  `cook.dll!0x44a0` reciprocal-multiply that decomposes a packed quantiser
+  index into its per-coefficient digits without a hardware division
+  (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §2.2,
+  `provenance/05` evidence #7, `tables/README.md` row `0x8fac`). The seven
+  Q-format constants
+  `{0x12493, 0x1999a, 0x24925, 0x33334, 0x40000, 0x55556, 0x80000}`
+  ([`INDEX_RECIP`](src/index_decomp.rs)) are the `ceil(2^20 / n)`
+  reciprocals of the seven per-category radices `{14, 10, 7, 5, 4, 3, 2}`
+  ([`INDEX_RADIX`](src/index_decomp.rs), recovered by arithmetic and
+  verified against the constants). [`reciprocal_quotient`](src/index_decomp.rs)
+  applies the pinned `(idx * recip) >> 0x14` multiply-shift and
+  [`decompose_index`](src/index_decomp.rs) returns the
+  `(quotient, remainder) = (idx / n, idx mod n)` pair — the
+  `(codebook-symbol carry, in-symbol-position digit)` halves §2.2 names —
+  range-checked behind [`Error::IndexRecipOutOfRange`](src/lib.rs). The
+  exact field-decomposition *role* stays the recorded `tables/README.md`
+  GAP and the §3.2 BSS codebook bytes the digits index remain GAP; the
+  arithmetic primitive and the radix recovery are pinned.
+- **Joint-stereo coupling-control read (§4.1)** —
+  [`coupling_control`](src/coupling_control.rs) wires the stereo
+  coupling-control read `cook.dll!0x3d10`
+  (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §4.1,
+  `provenance/05` evidence #12 / #13). The leading flag bit selects the
+  per-band coupling-index read mode ([`read_coupling_mode`](src/coupling_control.rs)
+  → [`CouplingReadMode`](src/coupling_control.rs)): **set** → VLC
+  (`cook.dll!0x3a50` over the §3.2 BSS codebooks, the recorded blocker),
+  **clear** → a fixed-width `read-n-bits(coupling_bits)` field with
+  `n =` context `+0x1c`. The fixed-width branch
+  ([`read_fixed_coupling_index`](src/coupling_control.rs)) is fully
+  implemented from the [`FrameBitReader`](src/bitreader.rs) and yields one
+  rotation index `j` in `0..Ncoup` (`Ncoup = 1 << coupling_bits`), the
+  angle quantiser the §4.2 mirror split consumes;
+  [`read_coupling_index`](src/coupling_control.rs) surfaces
+  `Error::SpectralCodebookBytesUnavailable` for the VLC branch rather than
+  guessing. The context offsets `+0x1c` (coupling bit width) and `+0x18`
+  (per-channel subband count, [`CTX_SUBBAND_COUNT_OFFSET`](src/coupling_control.rs))
+  are surfaced as named constants. The **coupling-band boundary
+  derivation** (§4.1 gives no closed form) stays a recorded DOCS-GAP — the
+  caller supplies the contiguous coupling-band range.
+- **Inverse-transform output stage (§5)** —
+  [`output_stage`](src/output_stage.rs) wires the windowing + overlap-add
+  that surrounds the iMDCT kernel
+  (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §5, spec/01
+  §5.1, `provenance/05` evidence #14).
+  [`apply_window`](src/output_stage.rs) /
+  [`windowed`](src/output_stage.rs) multiply a time-domain block
+  point-wise by the stored Princen-Bradley window
+  ([`mdct_half_window`](src/mdct.rs), whose `w[k]² + w[N-1-k]² = 1` TDAC
+  identity the `mdct-windows.meta` validates);
+  [`overlap_add`](src/output_stage.rs) sums two equal-length windowed
+  contributions and [`overlap_add_weighted`](src/output_stage.rs) applies
+  the L/R combine mix weights `0.5`
+  ([`OVERLAP_MIX_WEIGHT_HALF`](src/output_stage.rs), RVA `0x8c0c`) and
+  `0.75` ([`OVERLAP_MIX_WEIGHT_THREE_QUARTER`](src/output_stage.rs), RVA
+  `0x8c10`). [`window_and_gain`](src/output_stage.rs) composes the §5
+  per-block sequence (window then §1 [`apply_gain_blocks`](src/gain.rs)
+  gain-scale) in the binary's order. The **iMDCT kernel itself**
+  (`cook.dll!0x5b70`, the `0xa1b0` rotation table with no validated closed
+  form — audit #16) stays the recorded GAP and is a caller input; the
+  long/short window selection and per-flavor weight routing also stay
+  GAPs. New typed errors `Error::OutputWindowLengthMismatch` /
+  `Error::OverlapAddLengthMismatch`.
 
 ## Not yet implemented
 
