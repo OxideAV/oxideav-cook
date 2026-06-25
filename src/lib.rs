@@ -312,6 +312,7 @@ pub mod bitreader;
 pub mod category;
 pub mod cookie;
 pub mod coupling;
+pub mod coupling_control;
 pub mod descramble;
 pub mod driver;
 pub mod flavor;
@@ -346,6 +347,10 @@ pub use category::{
 };
 pub use cookie::{CookCookie, SelectorFamily, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
 pub use coupling::{CouplingMode, StereoMode, STEREO_MODE_MAX, STEREO_MODE_MIN};
+pub use coupling_control::{
+    read_coupling_index, read_coupling_mode, read_fixed_coupling_index, CouplingReadMode,
+    CTX_COUPLING_INDEX_BITS_OFFSET, CTX_SUBBAND_COUNT_OFFSET,
+};
 pub use descramble::{descramble_packet, xor_descramble, xor_descramble_into, xor_key, CommonMode};
 pub use driver::{DecodeGate, Driver, PreparedCall};
 pub use flavor::{
