@@ -318,6 +318,7 @@ pub mod flavor;
 pub mod flavor_property;
 pub mod frame;
 pub mod gain;
+pub mod index_decomp;
 pub mod init;
 pub mod mdct;
 pub mod quantiser;
@@ -363,6 +364,11 @@ pub use frame::{
 pub use gain::{
     apply_gain_blocks, apply_gain_envelope, expand_gain_envelope, gain_factor_for_index,
     read_segment_count, GainSegment, GAIN_POS_WINDOW, SEGMENT_COUNT_BIAS, SEGMENT_COUNT_FIELD_BITS,
+};
+pub use index_decomp::{
+    decompose_index, index_radix, index_recip, reciprocal_quotient, INDEX_RADIX, INDEX_RECIP,
+    INDEX_RECIP_COUNT, INDEX_RECIP_RVA, INDEX_RECIP_SCALE, INDEX_RECIP_SHIFT,
+    MAX_INDEX_RECIP_INDEX,
 };
 pub use init::{DecodeConfig, Descriptor, PCM_BYTES_PER_SAMPLE, RADECODE_FLAGS_DECODE};
 pub use mdct::{
@@ -733,6 +739,15 @@ pub enum Error {
     /// fabricating the codebook contents. The same BSS-build mechanism
     /// gates the §4.3 per-coupling-width rotation coefficient values.
     SpectralCodebookBytesUnavailable,
+    /// A reciprocal-table index was outside the seven-entry `0x8fac`
+    /// Q-format reciprocal array
+    /// (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §2.2:
+    /// *"the Q-format constants at RVA `0x8fac`"*; seven entries, indices
+    /// `0..=[crate::MAX_INDEX_RECIP_INDEX]`).
+    IndexRecipOutOfRange {
+        /// The supplied reciprocal-table index.
+        got: u8,
+    },
 }
 
 impl core::fmt::Display for Error {
@@ -910,6 +925,11 @@ impl core::fmt::Display for Error {
                 "oxideav-cook: backend frame walk reached the §3 spectral-VLC step; \
                  the seven codebooks' code/length bytes are runtime-built in BSS \
                  and not in the file image (spec/05 §3.2 — docs-gap #1775)",
+            ),
+            Error::IndexRecipOutOfRange { got } => write!(
+                f,
+                "oxideav-cook: reciprocal-table index {got} out of range \
+                 (0x8fac has 7 entries, indices 0..=6)"
             ),
         }
     }
