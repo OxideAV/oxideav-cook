@@ -307,6 +307,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod assembler;
 pub mod bit_alloc;
 pub mod bitreader;
 pub mod category;
@@ -337,6 +338,7 @@ pub mod subpacket;
 pub mod synthesis;
 pub mod tables;
 
+pub use assembler::CallPcmAssembler;
 pub use bit_alloc::{
     bit_alloc_category_for_position, BitAllocAxisPosition, BitAllocCategory, BIT_ALLOC_AXIS_LEN,
     BIT_ALLOC_CATEGORY_COUNT, MAX_BIT_ALLOC_AXIS_POSITION, MAX_BIT_ALLOC_CATEGORY,
@@ -828,6 +830,25 @@ pub enum Error {
         /// Channel 1 length.
         ch1: usize,
     },
+    /// A synthesized frame's PCM did not carry exactly
+    /// `samples_per_frame × channels × 2` bytes
+    /// ([`assembler::CallPcmAssembler::frame_pcm_bytes`]).
+    FramePcmLengthMismatch {
+        /// The supplied frame PCM length.
+        got: usize,
+        /// The per-frame PCM byte size the config derives.
+        expected: usize,
+    },
+    /// A per-call PCM fill was requested with fewer bytes buffered than
+    /// the call budget requires — the caller has not pushed the call's
+    /// synthesized frames yet (`validation/04` §5 cadence:
+    /// `sub_packets_per_call` frames enter per call).
+    PcmAssemblerUnderrun {
+        /// Bytes the call budget requires.
+        need: usize,
+        /// Bytes currently buffered.
+        have: usize,
+    },
 }
 
 impl core::fmt::Display for Error {
@@ -1043,6 +1064,16 @@ impl core::fmt::Display for Error {
                 f,
                 "oxideav-cook: stereo interleave channels differ in length \
                  ({ch0} vs {ch1})"
+            ),
+            Error::FramePcmLengthMismatch { got, expected } => write!(
+                f,
+                "oxideav-cook: synthesized frame PCM length {got} does not match \
+                 the per-frame budget {expected}"
+            ),
+            Error::PcmAssemblerUnderrun { need, have } => write!(
+                f,
+                "oxideav-cook: per-call PCM fill needs {need} bytes but only \
+                 {have} are buffered (push the call's frames first)"
             ),
         }
     }

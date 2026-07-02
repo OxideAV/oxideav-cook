@@ -8,6 +8,20 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `assembler` module — the **frame → per-call PCM carry buffer**
+  (`spec/01` §5 `+0x20` carry accounting, `validation/04` §5 cadence).
+  `CallPcmAssembler::from_config` derives the per-frame PCM size from
+  the config's own accounting (`pcm_bytes_per_call /
+  sub_packets_per_call` = 4 096 bytes on the validated stream);
+  `push_frame_pcm` enqueues one synthesized frame, `fill_call` dequeues
+  one call's validator-pinned budget. The 144-call cadence test
+  reproduces the pinned totals exactly (8 192 warm-up + 143 × 20 480 =
+  2 936 832) with the constant `pcm_bytes_per_call − warmup` = 12 288-
+  byte (three-frame) backlog from call 0 onward. The FIFO frame→call
+  mapping is documented as the arithmetic-consistent model choice (the
+  trace pins sizes/totals, not the physical mapping). New errors
+  `FramePcmLengthMismatch`, `PcmAssemblerUnderrun`. 6 tests.
+
 - `pcm` module — the **PCM emission stage** (`validation/04` §5:
   every per-call budget is `samples × channels × 2` bytes — 16-bit
   PCM; spec/01 §5.1 *"… → PCM out"*). `f32_to_i16_sample`
