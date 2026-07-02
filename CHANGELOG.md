@@ -8,6 +8,23 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `synthesis` module — the **streaming §5 synthesis engine**
+  (`spec/05` §5 stage order: inverse transform → window → §1.2 gain →
+  overlap-add). `Synthesizer` holds the full synthesis window + the
+  carried previous-block tail (zeroed warm-up state, matching the
+  observe-gate / first-call accounting of `validation/04` §4.3);
+  `push_spectrum` / `push_spectrum_with_gain` consume one hop of
+  spectral lines and emit one hop of finished samples per frame.
+  `from_stored` wires the five vendored windows (hops 3/7/15/31/64);
+  `with_window` accepts a caller-supplied window for other hops — the
+  frame-length window (e.g. 2×1024 taps) is not among the extracted
+  tables and stays a recorded GAP-input, never fabricated. Tests pin
+  streaming perfect reconstruction over the TDAC-pinned vendored rows
+  and over an exact-TDAC synthetic test fixture at hop 128, the
+  zero-spectra ⇒ zero-PCM observe consistency, gain scaling across the
+  overlap split, and reset semantics. New error
+  `SynthesisSpectrumLengthMismatch`. 9 tests.
+
 - `imlt` module — the §5 **inverse MLT / inverse MDCT closed form**
   (`spec/01` §5.1: *"inverse MDCT at the selected block length"*,
   `spec/05` §5). `imlt_direct(spectrum)` evaluates the defining

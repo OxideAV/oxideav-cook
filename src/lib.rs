@@ -333,6 +333,7 @@ pub mod spectral;
 pub mod spi;
 pub mod subband;
 pub mod subpacket;
+pub mod synthesis;
 pub mod tables;
 
 pub use bit_alloc::{
@@ -425,6 +426,7 @@ pub use subband::{
     SUBBAND_HALF_SCALAR_RVA, SUBBAND_IDENTITY_RUN, SUBBAND_START_LINE_LUT_RVA,
 };
 pub use subpacket::SubPacketLayout;
+pub use synthesis::Synthesizer;
 
 /// Crate-local error type. Concrete variants land as the rebuild rounds
 /// populate the codec pipeline.
@@ -795,6 +797,17 @@ pub enum Error {
         /// The supplied input length.
         got: usize,
     },
+    /// A spectrum pushed into the §5 [`synthesis::Synthesizer`] did not
+    /// carry exactly one hop of coefficients (`spec/01` §5.1: the
+    /// inverse MDCT runs at the selected block length — `N` spectral
+    /// lines in, `N` finished samples out per frame after the
+    /// overlap-add).
+    SynthesisSpectrumLengthMismatch {
+        /// The supplied spectrum length.
+        got: usize,
+        /// The engine's hop (spectral lines per frame).
+        hop: usize,
+    },
 }
 
 impl core::fmt::Display for Error {
@@ -995,6 +1008,11 @@ impl core::fmt::Display for Error {
                 f,
                 "oxideav-cook: forward-MLT input length {got} is odd \
                  (the MDCT consumes 2N time samples per N-coefficient frame)"
+            ),
+            Error::SynthesisSpectrumLengthMismatch { got, hop } => write!(
+                f,
+                "oxideav-cook: synthesis spectrum length {got} does not match \
+                 the engine hop {hop}"
             ),
         }
     }
