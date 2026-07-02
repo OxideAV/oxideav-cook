@@ -8,6 +8,27 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `backend` module — the assembled **post-entropy synthesis backend**:
+  `SynthesisBackend` bundles one §5 `Synthesizer` per channel, the
+  stereo interleave, the 16-bit LE PCM conversion, and the per-call
+  `CallPcmAssembler` into the single stage that turns a
+  `FrameSpectrum` (the post-entropy reconstruction output) into
+  `RADecode`-call PCM. Uncoded upper spectral lines (beyond the §2.1
+  `total_coded_lines`) are zero-filled to the transform size — the only
+  non-fabricating completion. The 144-call zero-spectra walk reproduces
+  the observe-gate output byte-for-byte and the pinned 2 936 832-byte
+  total in lockstep with the `Driver` session (with the 12 288-byte
+  carry backlog), and a mono hop-64 roundtrip reconstructs a source
+  signal through the full spectra → PCM-bytes path. The frame-length
+  synthesis window stays a caller-supplied GAP input (only the
+  3/7/15/31/64 rows are extracted); the entropy-decoded spectra stay
+  GAP-sourced (docs-gap #1775). New errors
+  `SynthesisWindowLengthMismatch`, `FrameSpectrumChannelMismatch`,
+  `GainProfileCountMismatch`, `SpectrumExceedsTransformSize`. 5 tests.
+- `imlt_direct` exact-by-linearity **zero fast path**: the transform of
+  the zero spectrum returns the zero block without evaluating the
+  kernel (the observe-gate / silent-frame case).
+
 - `assembler` module — the **frame → per-call PCM carry buffer**
   (`spec/01` §5 `+0x20` carry accounting, `validation/04` §5 cadence).
   `CallPcmAssembler::from_config` derives the per-frame PCM size from

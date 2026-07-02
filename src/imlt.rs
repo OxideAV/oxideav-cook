@@ -81,9 +81,14 @@ pub fn imlt_direct(spectrum: &[f32]) -> Result<Vec<f32>, Error> {
     if n == 0 {
         return Err(Error::TransformSizeZero);
     }
+    let mut out = vec![0f32; 2 * n];
+    // Exact-by-linearity fast path: the transform of the zero spectrum
+    // is the zero block (the observe-gate / silent-frame case).
+    if spectrum.iter().all(|&c| c == 0.0) {
+        return Ok(out);
+    }
     let nf = n as f64;
     let scale = 2.0 / nf;
-    let mut out = vec![0f32; 2 * n];
     for (m, sample) in out.iter_mut().enumerate() {
         let phase = core::f64::consts::PI / nf * (m as f64 + 0.5 + nf / 2.0);
         let mut acc = 0f64;

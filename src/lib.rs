@@ -308,6 +308,7 @@
 #![forbid(unsafe_code)]
 
 pub mod assembler;
+pub mod backend;
 pub mod bit_alloc;
 pub mod bitreader;
 pub mod category;
@@ -339,6 +340,7 @@ pub mod synthesis;
 pub mod tables;
 
 pub use assembler::CallPcmAssembler;
+pub use backend::SynthesisBackend;
 pub use bit_alloc::{
     bit_alloc_category_for_position, BitAllocAxisPosition, BitAllocCategory, BIT_ALLOC_AXIS_LEN,
     BIT_ALLOC_CATEGORY_COUNT, MAX_BIT_ALLOC_AXIS_POSITION, MAX_BIT_ALLOC_CATEGORY,
@@ -849,6 +851,42 @@ pub enum Error {
         /// Bytes currently buffered.
         have: usize,
     },
+    /// A synthesis window did not carry `2 × samples_per_frame` taps
+    /// (`spec/05` §5: the transform emits `2N` samples per `N`-line
+    /// frame, each multiplied by one window tap).
+    SynthesisWindowLengthMismatch {
+        /// The supplied window length.
+        got: usize,
+        /// The required length (`2 × samples_per_frame`).
+        expected: usize,
+    },
+    /// A [`frame::FrameSpectrum`]'s channel routing disagreed with the
+    /// wired config (`spec/05` §0: the mono body decodes one spectrum,
+    /// the stereo body a coupled pair).
+    FrameSpectrumChannelMismatch {
+        /// Channels the spectrum carries (1 = mono, 2 = stereo).
+        got: u16,
+        /// Channels the config wires.
+        expected: u16,
+    },
+    /// A per-channel §1.2 gain-profile set did not carry exactly one
+    /// profile per wired channel.
+    GainProfileCountMismatch {
+        /// Profiles supplied.
+        got: usize,
+        /// Profiles required (= channels).
+        expected: usize,
+    },
+    /// A reconstructed spectrum carried more spectral lines than the
+    /// transform admits (`spec/01` §5.1: the inverse MDCT runs at the
+    /// selected block length — coded lines never exceed it; the
+    /// remaining upper lines are uncoded and zero-filled).
+    SpectrumExceedsTransformSize {
+        /// Coded lines supplied.
+        got: usize,
+        /// The transform size (`samples_per_frame`).
+        hop: usize,
+    },
 }
 
 impl core::fmt::Display for Error {
@@ -1074,6 +1112,26 @@ impl core::fmt::Display for Error {
                 f,
                 "oxideav-cook: per-call PCM fill needs {need} bytes but only \
                  {have} are buffered (push the call's frames first)"
+            ),
+            Error::SynthesisWindowLengthMismatch { got, expected } => write!(
+                f,
+                "oxideav-cook: synthesis window length {got} does not match \
+                 2 x samples_per_frame (expected {expected})"
+            ),
+            Error::FrameSpectrumChannelMismatch { got, expected } => write!(
+                f,
+                "oxideav-cook: frame spectrum carries {got} channel(s) but the \
+                 config wires {expected}"
+            ),
+            Error::GainProfileCountMismatch { got, expected } => write!(
+                f,
+                "oxideav-cook: {got} gain profile(s) supplied for {expected} \
+                 channel(s)"
+            ),
+            Error::SpectrumExceedsTransformSize { got, hop } => write!(
+                f,
+                "oxideav-cook: spectrum carries {got} coded lines but the \
+                 transform admits {hop}"
             ),
         }
     }
