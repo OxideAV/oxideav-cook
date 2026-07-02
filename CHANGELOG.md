@@ -8,6 +8,18 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `mdct::mdct_full_window` — the full `2L`-tap Princen-Bradley window as
+  the **mirror completion** of the stored half-window
+  (`tables/mdct-windows.meta`: each row is a *"monotone-decreasing
+  half-window"* of an *"MDCT analysis/synthesis window"* — the falling
+  half; the Princen-Bradley family is symmetric so the rising half is the
+  stored half reversed). The hop-shift overlap-add identity
+  `W[k]^2 + W[k+L]^2 = 1` follows directly from the pinned in-row
+  identity `w[k]^2 + w[L-1-k]^2 = 1` — no new numeric fact assumed;
+  elements are bit-identical to the vendored values, only re-ordered.
+  `OnceLock`-cached per row. 4 new tests (mirror layout, symmetry,
+  rise/fall shape, hop-TDAC for the pinned rows).
+
 - `index_decomp` module — the §2.2 **division-free quantiser-index
   decomposition** (`cook.dll!0x44a0`, `spec/05` §2.2, `provenance/05`
   evidence #7, `tables/README.md` row `0x8fac`). The seven Q-format

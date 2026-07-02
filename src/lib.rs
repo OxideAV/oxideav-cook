@@ -378,8 +378,8 @@ pub use index_decomp::{
 };
 pub use init::{DecodeConfig, Descriptor, PCM_BYTES_PER_SAMPLE, RADECODE_FLAGS_DECODE};
 pub use mdct::{
-    mdct_half_window, MdctWindowLength, MDCT_WINDOW_COUNT, MDCT_WINDOW_TABLE_END_RVA,
-    MDCT_WINDOW_TABLE_RVA,
+    mdct_full_window, mdct_half_window, MdctWindowLength, MDCT_WINDOW_COUNT,
+    MDCT_WINDOW_TABLE_END_RVA, MDCT_WINDOW_TABLE_RVA,
 };
 pub use output_stage::{
     apply_window, overlap_add, overlap_add_weighted, window_and_gain, windowed,

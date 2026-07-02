@@ -177,6 +177,52 @@ pub fn mdct_half_window(len: MdctWindowLength) -> &'static [f32] {
     mdct_windows()[len.row_index()]
 }
 
+/// The full `2L`-tap Princen-Bradley window — the mirror completion of
+/// the stored half-window.
+///
+/// Derivation (no numbers are invented):
+///
+/// - `tables/mdct-windows.meta` names each stored row an *"MDCT
+///   analysis/synthesis window"* that is a **monotone-decreasing
+///   half-window** — i.e. the *falling* half of the full window (a full
+///   Princen-Bradley window rises, peaks, then falls; a decreasing run
+///   of length `L` is its second half).
+/// - The Princen-Bradley family the `.meta` names is **symmetric**
+///   (`W[k] = W[2L-1-k]`), so the rising half is the stored half read in
+///   reverse — the unique symmetric completion:
+///   `W[k] = w[L-1-k]` for `k < L` and `W[L+k] = w[k]` for `k < L`.
+/// - The overlap-add perfect-reconstruction identity across the hop,
+///   `W[k]^2 + W[k+L]^2 = 1`, then follows **directly** from the pinned
+///   in-row identity `w[k]^2 + w[L-1-k]^2 = 1` (the `.meta` validation
+///   note, pinned for rows 3/7/15/31) — no new numeric fact is assumed.
+///
+/// The result is the window the §5 output stage multiplies each
+/// inverse-transform block by before the overlap-add (`spec/05` §5:
+/// *"windowed with one of the five Princen-Bradley windows …, and
+/// overlap-added into the output"*). Cached per row (one build per
+/// process); elements are bit-identical to the vendored half-window
+/// values, only re-ordered.
+pub fn mdct_full_window(len: MdctWindowLength) -> &'static [f32] {
+    use std::sync::OnceLock;
+    static FULL: OnceLock<[Vec<f32>; MDCT_WINDOW_COUNT]> = OnceLock::new();
+    let rows = FULL.get_or_init(|| {
+        let build = |w: MdctWindowLength| -> Vec<f32> {
+            let half = mdct_half_window(w);
+            // Rising half = mirror of the stored falling half, then the
+            // stored falling half verbatim.
+            half.iter().rev().chain(half.iter()).copied().collect()
+        };
+        [
+            build(MdctWindowLength::L3),
+            build(MdctWindowLength::L7),
+            build(MdctWindowLength::L15),
+            build(MdctWindowLength::L31),
+            build(MdctWindowLength::L64),
+        ]
+    });
+    &rows[len.row_index()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,6 +334,72 @@ mod tests {
                 assert!(
                     (lhs - 1.0).abs() < 1e-3,
                     "TDAC fail at len={n}, k={k}: {lhs}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn full_window_is_mirror_completion_of_stored_half() {
+        // W[k] = w[L-1-k] (rising), W[L+k] = w[k] (stored falling half
+        // verbatim) — bit-identical values, only re-ordered.
+        for w in MdctWindowLength::ALL {
+            let half = mdct_half_window(w);
+            let full = mdct_full_window(w);
+            let l = half.len();
+            assert_eq!(full.len(), 2 * l);
+            for k in 0..l {
+                assert_eq!(full[k].to_bits(), half[l - 1 - k].to_bits());
+                assert_eq!(full[l + k].to_bits(), half[k].to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn full_window_is_symmetric() {
+        // The Princen-Bradley completion is symmetric: W[k] = W[2L-1-k].
+        for w in MdctWindowLength::ALL {
+            let full = mdct_full_window(w);
+            let n = full.len();
+            for k in 0..n / 2 {
+                assert_eq!(full[k].to_bits(), full[n - 1 - k].to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn full_window_rises_then_falls() {
+        // The mirror completion of a monotone-decreasing half rises over
+        // the first half and falls over the second.
+        for w in MdctWindowLength::ALL {
+            let full = mdct_full_window(w);
+            let l = full.len() / 2;
+            for pair in full[..l].windows(2) {
+                assert!(pair[0] <= pair[1], "rising half not monotone");
+            }
+            for pair in full[l..].windows(2) {
+                assert!(pair[0] >= pair[1], "falling half not monotone");
+            }
+        }
+    }
+
+    #[test]
+    fn full_window_hop_tdac_follows_from_pinned_in_row_identity() {
+        // W[k]^2 + W[k+L]^2 = w[L-1-k]^2 + w[k]^2 = 1 — the hop-shift
+        // overlap-add identity is exactly the pinned in-row identity,
+        // re-indexed. Assert it through the full-window accessor for the
+        // rows whose in-row identity the `.meta` pins (3/7/15/31).
+        for w in MdctWindowLength::ALL {
+            if !w.tdac_pinned() {
+                continue;
+            }
+            let full = mdct_full_window(w);
+            let l = full.len() / 2;
+            for k in 0..l {
+                let id = full[k] * full[k] + full[k + l] * full[k + l];
+                assert!(
+                    (id - 1.0).abs() < 1e-3,
+                    "hop TDAC fail len={l}, k={k}: {id}"
                 );
             }
         }
