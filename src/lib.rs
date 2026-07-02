@@ -319,6 +319,7 @@ pub mod flavor;
 pub mod flavor_property;
 pub mod frame;
 pub mod gain;
+pub mod imlt;
 pub mod index_decomp;
 pub mod init;
 pub mod mdct;
@@ -371,6 +372,7 @@ pub use gain::{
     apply_gain_blocks, apply_gain_envelope, expand_gain_envelope, gain_factor_for_index,
     read_segment_count, GainSegment, GAIN_POS_WINDOW, SEGMENT_COUNT_BIAS, SEGMENT_COUNT_FIELD_BITS,
 };
+pub use imlt::{imlt_direct, mlt_direct};
 pub use index_decomp::{
     decompose_index, index_radix, index_recip, reciprocal_quotient, INDEX_RADIX, INDEX_RECIP,
     INDEX_RECIP_COUNT, INDEX_RECIP_RVA, INDEX_RECIP_SCALE, INDEX_RECIP_SHIFT,
@@ -780,6 +782,19 @@ pub enum Error {
         /// Length of the second (current-block) contribution.
         b: usize,
     },
+    /// The §5 inverse transform was asked for a zero-size block
+    /// (`docs/audio/cook/spec/01-cook-decoder-structure.md` §5.1: the
+    /// inverse MDCT runs at the selected block length, which is always
+    /// `>= 1` for a real frame — a zero-length spectrum has no defined
+    /// transform).
+    TransformSizeZero,
+    /// A forward-MLT input block had odd length — the MDCT consumes
+    /// `2N` time samples per `N`-coefficient frame, so the input length
+    /// must be even.
+    TransformInputLengthOdd {
+        /// The supplied input length.
+        got: usize,
+    },
 }
 
 impl core::fmt::Display for Error {
@@ -971,6 +986,15 @@ impl core::fmt::Display for Error {
             Error::OverlapAddLengthMismatch { a, b } => write!(
                 f,
                 "oxideav-cook: overlap-add contributions differ in length ({a} vs {b})"
+            ),
+            Error::TransformSizeZero => f.write_str(
+                "oxideav-cook: inverse-transform block size is 0 \
+                 (spec/01 §5.1 runs the inverse MDCT at a block length >= 1)",
+            ),
+            Error::TransformInputLengthOdd { got } => write!(
+                f,
+                "oxideav-cook: forward-MLT input length {got} is odd \
+                 (the MDCT consumes 2N time samples per N-coefficient frame)"
             ),
         }
     }

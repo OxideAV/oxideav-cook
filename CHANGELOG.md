@@ -8,6 +8,24 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `imlt` module — the §5 **inverse MLT / inverse MDCT closed form**
+  (`spec/01` §5.1: *"inverse MDCT at the selected block length"*,
+  `spec/05` §5). `imlt_direct(spectrum)` evaluates the defining
+  `y[n] = (2/N)·Σ_k X[k]·cos((π/N)(n+½+N/2)(k+½))` (f64 accumulation);
+  `mlt_direct` is the forward companion. Tests pin the time-domain alias
+  symmetry (first half antisymmetric / second half symmetric — the TDAC
+  structure), linearity, the tight-frame composition `MLT∘IMLT = 2·id`,
+  and **perfect reconstruction**: analysis-window → MLT → IMLT →
+  synthesis-window → overlap-add reproduces the input over the stored
+  3/7/15/31 full windows whose TDAC identity the `.meta` pins. The
+  binary's fast kernel (`0x5b70` + `0xa1b0` rotation table, audit #16: no
+  validated closed form, not a unit-circle twiddle) stays the recorded
+  GAP — this wires the transform the stage is *pinned as*; whether the
+  kernel's normalisation/sign convention matches is unverifiable until
+  the §3.2 entropy GAP lands, and that caveat is recorded in the module
+  docs. New errors `TransformSizeZero`, `TransformInputLengthOdd`.
+  7 tests.
+
 - `mdct::mdct_full_window` — the full `2L`-tap Princen-Bradley window as
   the **mirror completion** of the stored half-window
   (`tables/mdct-windows.meta`: each row is a *"monotone-decreasing
