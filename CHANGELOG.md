@@ -8,6 +8,19 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `pcm` module — the **PCM emission stage** (`validation/04` §5:
+  every per-call budget is `samples × channels × 2` bytes — 16-bit
+  PCM; spec/01 §5.1 *"… → PCM out"*). `f32_to_i16_sample`
+  (round-to-nearest, saturating — the conversion convention is
+  documented as a *choice*, the binary's rounding mode being unpinned),
+  `write_pcm_i16le` / `pcm_i16le` (little-endian packing), and
+  `interleave_stereo` (the sample-interleaved packing under which the
+  validator's byte budgets account exactly). Tests pin rounding,
+  saturation, LE byte order, silence ⇒ all-zero bytes (the observe-gate
+  consistency), interleave, and the 1024-sample stereo frame = 4 096
+  bytes = one fifth of the validated 20 480-byte call budget. New
+  errors `PcmOutputLengthMismatch`, `InterleaveLengthMismatch`. 8 tests.
+
 - `synthesis` module — the **streaming §5 synthesis engine**
   (`spec/05` §5 stage order: inverse transform → window → §1.2 gain →
   overlap-add). `Synthesizer` holds the full synthesis window + the

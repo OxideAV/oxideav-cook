@@ -324,6 +324,7 @@ pub mod index_decomp;
 pub mod init;
 pub mod mdct;
 pub mod output_stage;
+pub mod pcm;
 pub mod quantiser;
 pub mod reciprocal;
 pub mod reconstruct;
@@ -389,6 +390,7 @@ pub use output_stage::{
     OVERLAP_MIX_WEIGHT_HALF, OVERLAP_MIX_WEIGHT_HALF_RVA, OVERLAP_MIX_WEIGHT_THREE_QUARTER,
     OVERLAP_MIX_WEIGHT_THREE_QUARTER_RVA,
 };
+pub use pcm::{f32_to_i16_sample, interleave_stereo, pcm_i16le, write_pcm_i16le};
 pub use quantiser::{
     band_gain_magnitude, clip_quantiser_index, quantiser_level, QUANTISER_DIVISOR,
     QUANTISER_DIVISOR_RVA,
@@ -808,6 +810,24 @@ pub enum Error {
         /// The engine's hop (spectral lines per frame).
         hop: usize,
     },
+    /// A PCM output buffer was not exactly
+    /// [`PCM_BYTES_PER_SAMPLE`] (= 2) bytes per sample
+    /// (`validation/04` §5: every per-call budget is
+    /// `samples × channels × 2` bytes — 16-bit PCM).
+    PcmOutputLengthMismatch {
+        /// The supplied buffer length.
+        got: usize,
+        /// The required length (`samples × 2`).
+        expected: usize,
+    },
+    /// The two channel buffers passed to the stereo interleave differed
+    /// in length (each sample instant carries one sample per channel).
+    InterleaveLengthMismatch {
+        /// Channel 0 length.
+        ch0: usize,
+        /// Channel 1 length.
+        ch1: usize,
+    },
 }
 
 impl core::fmt::Display for Error {
@@ -1013,6 +1033,16 @@ impl core::fmt::Display for Error {
                 f,
                 "oxideav-cook: synthesis spectrum length {got} does not match \
                  the engine hop {hop}"
+            ),
+            Error::PcmOutputLengthMismatch { got, expected } => write!(
+                f,
+                "oxideav-cook: PCM output buffer length {got} is not two bytes \
+                 per sample (expected {expected})"
+            ),
+            Error::InterleaveLengthMismatch { ch0, ch1 } => write!(
+                f,
+                "oxideav-cook: stereo interleave channels differ in length \
+                 ({ch0} vs {ch1})"
             ),
         }
     }
