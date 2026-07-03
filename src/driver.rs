@@ -435,30 +435,128 @@ impl Driver {
                 // Stage 5: account for the completed call.
                 self.session.advance_one_call(packet.len(), output.len())
             }
-            // The real bitstream decode — drive each sub-packet through
-            // the frame-body orchestrator (spec/05 §0–§3), which runs the
+            // The real bitstream decode — drive the frame-body
+            // orchestrator (spec/05 §0–§3), which runs the
             // statically-pinned prefix (§1.1 gain count, §2.1 subband
             // geometry) and stops precisely at the §3.2 BSS codebook
             // blocker (docs-gap #1775,
             // `Error::SpectralCodebookBytesUnavailable`). Reserving that
             // signal for the documented blocker keeps it distinct from a
             // size mismatch and from the legacy `NotImplemented`.
+            //
+            // spec/01 §5 pins that the backend frame-decode method is
+            // invoked exactly ONCE per call, with subsequent sub-packets
+            // consumed through the carry buffer at context `+0x20`; the
+            // §0 frame body therefore provably starts at the head of the
+            // call's (descrambled) input. Where the remaining
+            // `sub_packets_per_call − 1` frame bitstreams sit inside the
+            // call — the carry-buffer mechanics — is NOT pinned, and the
+            // validated stream shows the 93-byte slot boundaries after
+            // slot 0 are not independent frame heads (packet 0's slot 1
+            // opens with a §1.1 field of raw 4 < 6, an invalid frame
+            // head, while slot 0 opens with the well-formed raw 29).
+            // Only the head frame's pinned prefix is walked.
             DecodeGate::Decode => {
-                for slot in prepared.iter_sub_packets() {
-                    let frame = slot?;
-                    crate::frame::decode_frame_body(
-                        frame,
-                        self.config.channels,
-                        u32::from(self.config.subband_count),
-                    )?;
-                }
+                crate::frame::decode_frame_body(
+                    prepared.descrambled(),
+                    self.config.channels,
+                    u32::from(self.config.subband_count),
+                )?;
                 // Unreachable on a non-trivial stream: `decode_frame_body`
-                // returns the BSS blocker for every coded sub-packet. The
+                // returns the BSS blocker for every coded frame. The
                 // explicit terminator keeps the match total if a future
                 // dynamic-BSS-dump round unblocks the walk.
                 Err(Error::SpectralCodebookBytesUnavailable)
             }
         }
+    }
+}
+
+impl Driver {
+    /// Resume-from-blocker per-call decode — the full `RADecode` shape
+    /// with the §3.2 entropy step supplied by the caller.
+    ///
+    /// Runs the real per-call orchestration end-to-end:
+    ///
+    /// 1. Stage 1+2 ([`Driver::prepare_call`]): input-length validation,
+    ///    optional XOR descramble, sub-packet split.
+    /// 2. Output-budget validation (the validator-pinned per-call PCM
+    ///    budget — warm-up on call 0, steady-state thereafter).
+    /// 3. The §5 synthesis of the caller-supplied post-entropy spectra
+    ///    (`frames`, one [`crate::frame::FrameSpectrum`] per
+    ///    sub-packet — the §3.2 GAP-sourced input a future
+    ///    dynamic-BSS-dump round will produce in place of the caller),
+    ///    through the [`crate::backend::SynthesisBackend`] into
+    ///    `output`.
+    /// 4. Session accounting ([`crate::session::CallSession`] cursor
+    ///    advance).
+    ///
+    /// This path deliberately does **not** re-run the frame-body
+    /// bitstream walk: the supplied spectra *are* the post-entropy
+    /// product, so the entropy-side bitstream consumption they replace
+    /// (the walk [`Driver::decode_call`] drives up to the §3.2 blocker)
+    /// is theirs to account for. Moreover the §1.1 field reading is
+    /// contradicted on real data — 12 of the validated stream's 144
+    /// call heads carry a leading 6-bit field `< 6`, which biases
+    /// negative under the `spec/05` §1.1 *"field = segment_count + 6"*
+    /// reading (a recorded docs-gap; pinned by
+    /// `tests/synthesis_realstream.rs`) — so no real-bitstream §1.1
+    /// assertion is made on this path.
+    ///
+    /// The §1 gain profiles are entropy-gated (the per-segment records
+    /// descend the §3.2 BSS VLC), so this entry point synthesizes with
+    /// the flat unity envelope; callers needing explicit profiles can
+    /// drive the backend directly with
+    /// [`crate::backend::SynthesisBackend::push_frame_with_gain`].
+    ///
+    /// On any error the session cursor does not advance; the backend's
+    /// overlap/carry state may have consumed a prefix of `frames`
+    /// (reset it with [`crate::backend::SynthesisBackend::reset`]
+    /// before retrying a failed call).
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::CallInputLengthMismatch`] /
+    ///   [`Error::CallOutputLengthMismatch`] on buffer-size disagreement.
+    /// - [`Error::FrameSpectrumCountMismatch`] when `frames` does not
+    ///   carry one spectrum per sub-packet.
+    /// - Any synthesis/backend error (channel routing, spectrum width,
+    ///   PCM assembly underrun).
+    pub fn synthesized_call(
+        &mut self,
+        packet: &[u8],
+        output: &mut [u8],
+        xor_key: u32,
+        backend: &mut crate::backend::SynthesisBackend,
+        frames: &[crate::frame::FrameSpectrum],
+    ) -> Result<(), Error> {
+        // Stage 1+2: validate, descramble, split.
+        let prepared = self.prepare_call(packet, xor_key)?;
+        // Output budget validation before any state is touched.
+        let expected_out = self.session.next_call_pcm_bytes() as usize;
+        if output.len() != expected_out {
+            return Err(Error::CallOutputLengthMismatch {
+                got: output.len(),
+                expected: expected_out,
+            });
+        }
+        let spc = prepared.sub_packets_per_call() as usize;
+        if frames.len() != spc {
+            return Err(Error::FrameSpectrumCountMismatch {
+                got: frames.len(),
+                expected: spc,
+            });
+        }
+        // Stage 3: §5 synthesis of the caller-supplied post-entropy
+        // spectra, assembled into this call's PCM budget. (No bitstream
+        // walk on this path — the spectra replace the entropy stage;
+        // see the method docs.)
+        for spectrum in frames {
+            backend.push_frame(spectrum)?;
+        }
+        backend.fill_call(output)?;
+        // Stage 5: account for the completed call.
+        self.session.advance_one_call(packet.len(), output.len())
     }
 }
 

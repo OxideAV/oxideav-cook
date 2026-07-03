@@ -887,6 +887,16 @@ pub enum Error {
         /// The transform size (`samples_per_frame`).
         hop: usize,
     },
+    /// A resume-from-blocker call ([`driver::Driver::synthesized_call`])
+    /// was not supplied exactly one post-entropy [`frame::FrameSpectrum`]
+    /// per sub-packet (`spec/01` §5: the backend decodes one frame per
+    /// sub-packet slot).
+    FrameSpectrumCountMismatch {
+        /// Spectra supplied.
+        got: usize,
+        /// Spectra required (= `sub_packets_per_call`).
+        expected: usize,
+    },
 }
 
 impl core::fmt::Display for Error {
@@ -1132,6 +1142,11 @@ impl core::fmt::Display for Error {
                 f,
                 "oxideav-cook: spectrum carries {got} coded lines but the \
                  transform admits {hop}"
+            ),
+            Error::FrameSpectrumCountMismatch { got, expected } => write!(
+                f,
+                "oxideav-cook: {got} frame spectra supplied for a call of \
+                 {expected} sub-packets"
             ),
         }
     }

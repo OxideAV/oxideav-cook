@@ -8,6 +8,40 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `Driver::synthesized_call` — the **resume-from-blocker `RADecode`
+  analog**: stages 1+2 (validate / descramble / split), then the §5
+  synthesis of caller-supplied post-entropy spectra (one
+  `FrameSpectrum` per sub-packet — the §3.2 GAP input a future
+  dynamic-BSS-dump round will produce in place of the caller) through a
+  `SynthesisBackend` into the call's validator-pinned PCM budget, then
+  session accounting. Pinned end-to-end in
+  `tests/synthesis_realstream.rs`: the 144-real-packet silent-spectra
+  walk is **byte-identical to the observe-gate output** call-by-call
+  and lands the pinned 2 936 832-byte total with the 12 288-byte carry
+  backlog; typed rejections (buffer sizes, spectrum count) touch no
+  state. New error `FrameSpectrumCountMismatch`.
+- **Real-data finding (recorded docs-gap)** — the `spec/05` §1.1
+  *"leading 6-bit field = segment_count + 6"* reading is contradicted
+  on the validated stream: **12 of the 144** call heads carry a field
+  `< 6` (packets 4/5 open with raw `4`; packet 0 opens with the
+  well-formed raw `29`), which biases negative under the −6 form.
+  Pinned by `twelve_of_144_real_call_heads_underflow_the_pinned_gain_bias`;
+  `gain::read_segment_count` keeps the typed underflow rejection and
+  the synthesis path makes no §1.1 assertion until the docs clarify the
+  negative-bias semantics.
+
+- `Driver::decode_call` / `decode_call_with_flags` real-decode gate
+  **changed**: it now drives the frame-body walk **once per call** at
+  the head of the (descrambled) call input, per the spec/01 §5 pin that
+  the backend frame-decode method is invoked exactly once per
+  `RADecode` call with subsequent sub-packets consumed through the
+  `+0x20` carry buffer. The previous per-slot walk asserted that every
+  93-byte slot boundary is an independent frame head — contradicted by
+  the validated stream (packet 0's slot 1 opens with §1.1 raw `4`, an
+  invalid frame head, while slot 0 opens with the well-formed raw
+  `29`). The intra-call location of the remaining frame bitstreams
+  (the carry-buffer mechanics) is a recorded GAP; observable behaviour
+  on the blocker paths is unchanged.
 - `backend` module — the assembled **post-entropy synthesis backend**:
   `SynthesisBackend` bundles one §5 `Synthesizer` per channel, the
   stereo interleave, the 16-bit LE PCM conversion, and the per-call
