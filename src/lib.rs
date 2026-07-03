@@ -334,6 +334,7 @@ pub mod reconstruct;
 pub mod scale;
 pub mod session;
 pub mod spectral;
+pub mod spectral_decode;
 pub mod spi;
 pub mod subband;
 pub mod subpacket;
@@ -426,6 +427,9 @@ pub use spectral::{
     DEQUANT_SCALE_NONZERO, DEQUANT_SCALE_RVA, MAX_SPECTRAL_CODEBOOK_INDEX, SIGN_LUT, SIGN_LUT_RVA,
     SPECTRAL_CODEBOOK_COUNT, SPECTRAL_CODEBOOK_DIMS_RVA, SPECTRAL_CODEBOOK_LENGTH_PTRS_RVA,
     SPECTRAL_CODEBOOK_VALUE_PTRS_RVA,
+};
+pub use spectral_decode::{
+    compose_symbol, decode_band_digits, decompose_symbol, natural_codebook_for,
 };
 pub use spi::{
     SpiExport, E_INVALIDARG, E_NOTIMPL, HR_UNRECOGNISED_SELECTOR, RASETFLAVOR_CONTEXT_OFFSET,
