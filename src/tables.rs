@@ -20,6 +20,11 @@
 //! | [`reciprocal_1_over_n`]    |  11 | `1/n`, n=1..9, then 1/20 and 0 — averaging divisors |
 //! | [`category_index_lut`]     |  51 | monotone 0..19 category / quantiser-index LUT |
 //! | [`mdct_windows`]           | 120 | five Princen-Bradley half-windows, lengths 3,7,15,31,64 |
+//! | [`spectral_codebook_codes`] | 7 rows | per-symbol Huffman codes for the seven spectral VLC codebooks (BSS-recovered, §3.2) |
+//! | [`spectral_codebook_code_lengths`] | 7 rows | per-symbol code lengths, pairs with the codes |
+//! | [`category_cost_lut`]      |   7 | per-category expected bit-cost `{52,47,43,37,29,22,16}` (§2.2) |
+//! | [`transform_rotation_coeffs`] | 74×5 | iMDCT pre/post rotation coefficients (RVA `0xa1b0`) |
+//! | [`mdct_window_builder_consts`] | 4 | f64 const inputs `{2.0,0.25,π,0.5}` to the runtime window builder |
 //!
 //! Each loader caches its parse via [`std::sync::OnceLock`] so the CSV
 //! is split once per process. Lengths are advertised by the constants
@@ -40,6 +45,13 @@ const MDCT_WINDOWS_CSV: &str = include_str!("../tables/mdct-windows.csv");
 const CATEGORY_VECTOR_DIM_LO_CSV: &str = include_str!("../tables/category-vector-dim-lo.csv");
 const CATEGORY_VECTOR_DIM_HI_CSV: &str = include_str!("../tables/category-vector-dim-hi.csv");
 const SPECTRAL_CODEBOOK_DIMS_CSV: &str = include_str!("../tables/spectral-codebook-dims.csv");
+const SPECTRAL_CODEBOOK_CODES_CSV: &str = include_str!("../tables/spectral-codebook-codes.csv");
+const SPECTRAL_CODEBOOK_CODE_LENGTHS_CSV: &str =
+    include_str!("../tables/spectral-codebook-code-lengths.csv");
+const CATEGORY_COST_LUT_CSV: &str = include_str!("../tables/category-cost-lut.csv");
+const TRANSFORM_ROTATION_COEFFS_CSV: &str = include_str!("../tables/transform-rotation-coeffs.csv");
+const MDCT_WINDOW_BUILDER_CONSTS_CSV: &str =
+    include_str!("../tables/mdct-window-builder-consts.csv");
 
 // ---- advertised lengths (Feist facts from the `.meta` files) ------
 
@@ -85,6 +97,28 @@ pub const CATEGORY_VECTOR_DIM_LEN: usize = 7;
 /// `tables/spectral-codebook-dims.meta`, `element_count: 7`).
 pub const SPECTRAL_CODEBOOK_DIMS_LEN: usize = 7;
 
+/// Per-codebook symbol counts of the seven spectral Huffman codebooks —
+/// `{196, 100, 49, 625, 256, 243, 32}` (`spec/05 §3.1` /
+/// `tables/spectral-codebook-dims.meta`). This is the row-length of each
+/// codebook in [`spectral_codebook_codes`] / [`spectral_codebook_code_lengths`].
+pub const SPECTRAL_CODEBOOK_SYMBOL_COUNTS: [usize; 7] = [196, 100, 49, 625, 256, 243, 32];
+
+/// `category_cost_lut` length — 7 u32 (`spec/05 §2.2` /
+/// `tables/category-cost-lut.meta`).
+pub const CATEGORY_COST_LUT_LEN: usize = 7;
+
+/// `transform_rotation_coeffs` row count — 74 groups of 5 f32
+/// (`tables/transform-rotation-coeffs.meta`, RVA `0xa1b0`).
+pub const TRANSFORM_ROTATION_ROW_COUNT: usize = 74;
+
+/// Elements per `transform_rotation_coeffs` row — 5 f32, consumed
+/// 5-at-a-time (stride `0x14`) by the iMDCT kernel `cook.dll!0x5b70`.
+pub const TRANSFORM_ROTATION_ROW_LEN: usize = 5;
+
+/// `mdct_window_builder_consts` length — 4 f64
+/// (`tables/mdct-window-builder-consts.meta`, RVA `0x8c20`).
+pub const MDCT_WINDOW_BUILDER_CONSTS_LEN: usize = 4;
+
 // ---- helpers -------------------------------------------------------
 
 fn parse_f32_table_one_per_line(csv: &str, expected: usize) -> Vec<f32> {
@@ -126,6 +160,40 @@ fn parse_u32_table_one_per_line(csv: &str, expected: usize) -> Vec<u32> {
         "expected {expected} rows in vendored CSV, got {}",
         out.len()
     );
+    out
+}
+
+/// Parse a CSV where each non-empty line is one comma-separated `u32`
+/// row, into a fixed-size array of `Vec<u32>` whose row lengths are
+/// asserted against `row_lens`.
+fn parse_ragged_u32_rows<const N: usize>(csv: &str, row_lens: &[usize; N]) -> [Vec<u32>; N] {
+    let mut out: [Vec<u32>; N] = std::array::from_fn(|_| Vec::new());
+    let mut row_idx = 0usize;
+    for line in csv.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        assert!(row_idx < N, "ragged CSV has more than {N} rows");
+        let row: Vec<u32> = line
+            .split(',')
+            .map(|f| {
+                f.trim()
+                    .parse::<u32>()
+                    .unwrap_or_else(|_| panic!("non-u32 element: {f:?}"))
+            })
+            .collect();
+        assert_eq!(
+            row.len(),
+            row_lens[row_idx],
+            "ragged CSV row {row_idx} expected {} elements, got {}",
+            row_lens[row_idx],
+            row.len()
+        );
+        out[row_idx] = row;
+        row_idx += 1;
+    }
+    assert_eq!(row_idx, N, "ragged CSV must hold exactly {N} rows");
     out
 }
 
@@ -241,6 +309,154 @@ pub fn spectral_codebook_dims() -> &'static [u32] {
     static T: OnceLock<Vec<u32>> = OnceLock::new();
     T.get_or_init(|| {
         parse_u32_table_one_per_line(SPECTRAL_CODEBOOK_DIMS_CSV, SPECTRAL_CODEBOOK_DIMS_LEN)
+    })
+}
+
+/// Per-symbol Huffman **codes** (bit patterns, right-aligned, read
+/// MSB-first) for the seven spectral VLC codebooks
+/// (`tables/spectral-codebook-codes.csv`, `spec/05 §3.1` / `§3.2`).
+///
+/// Returns seven `&[u32]` rows, one per codebook, of lengths
+/// [`SPECTRAL_CODEBOOK_SYMBOL_COUNTS`] `{196, 100, 49, 625, 256, 243,
+/// 32}`. Pairs with [`spectral_codebook_code_lengths`]: symbol `s` of
+/// codebook `b` has code `codes[b][s]` of `lengths[b][s]` bits.
+///
+/// These are the tables `spec/05 §3.2` recorded as a runtime-built-in-BSS
+/// **GAP** (docs-gap #1775) — recovered by dumping the guest BSS the
+/// vendor decoder's own `RAInitDecoder` populated
+/// (`docs/audio/cook/provenance/06-cook-univdreams-extraction.md`), so the
+/// numbers are Feist-clean facts read from the decoder's memory image, not
+/// an algorithmic derivation.
+pub fn spectral_codebook_codes() -> &'static [Vec<u32>; 7] {
+    static T: OnceLock<[Vec<u32>; 7]> = OnceLock::new();
+    T.get_or_init(|| {
+        parse_ragged_u32_rows(
+            SPECTRAL_CODEBOOK_CODES_CSV,
+            &SPECTRAL_CODEBOOK_SYMBOL_COUNTS,
+        )
+    })
+}
+
+/// Per-symbol Huffman **code lengths** (bits) for the seven spectral VLC
+/// codebooks (`tables/spectral-codebook-code-lengths.csv`, `spec/05 §3.1`
+/// / `§3.2`).
+///
+/// Returns seven `&[u32]` rows, one per codebook, of the same lengths as
+/// [`spectral_codebook_codes`]. The per-codebook Kraft sum
+/// `Σ 2^-len` is `[1.000427, 1.000275, 1.000031, 1.001938, 1.002167,
+/// 1.308594, 1.0]` (`.meta`): codebook 6 is a strict prefix code and
+/// codebooks 0–5 carry the Cook escape-style duplicate max-length
+/// codewords, so the distinct codewords still form a proper prefix code
+/// (verified by the unit tests) while the duplicates are the escape
+/// mechanism.
+pub fn spectral_codebook_code_lengths() -> &'static [Vec<u32>; 7] {
+    static T: OnceLock<[Vec<u32>; 7]> = OnceLock::new();
+    T.get_or_init(|| {
+        parse_ragged_u32_rows(
+            SPECTRAL_CODEBOOK_CODE_LENGTHS_CSV,
+            &SPECTRAL_CODEBOOK_SYMBOL_COUNTS,
+        )
+    })
+}
+
+/// Per-category expected bit-cost LUT — `{52, 47, 43, 37, 29, 22, 16}`
+/// (`tables/category-cost-lut.csv`, RVA `0x8f38`, `spec/05 §2.2`).
+///
+/// Read as `[category*4 + 0x8f38]` in the category-assignment /
+/// bit-allocation pass `cook.dll!0x4800`: the running frame bit budget is
+/// reduced by the assigned category's cost each refinement round until the
+/// budget is met. Strictly decreasing across the seven categories.
+pub fn category_cost_lut() -> &'static [u32] {
+    static T: OnceLock<Vec<u32>> = OnceLock::new();
+    T.get_or_init(|| parse_u32_table_one_per_line(CATEGORY_COST_LUT_CSV, CATEGORY_COST_LUT_LEN))
+}
+
+/// The iMDCT pre/post rotation-coefficient table
+/// (`tables/transform-rotation-coeffs.csv`, RVA `0xa1b0`).
+///
+/// Returns 74 rows of 5 f32 each (370 total), consumed 5-at-a-time
+/// (stride `0x14`) by the iMDCT butterfly kernel `cook.dll!0x5b70`, the
+/// group base selected by the block-length class in `cook.dll!0x5b10`.
+/// The `.meta` records it as pure read-only `.rdata` const data with **no
+/// validated closed form** (columns 0 and 2 are equal in 71/74 groups;
+/// values lie in `(-1.575, 1.999)`; not a unit-circle twiddle), so it is
+/// vendored as flat Feist facts — the typed table access is wired here,
+/// not the kernel's use of it.
+pub fn transform_rotation_coeffs() -> &'static [[f32; 5]] {
+    static T: OnceLock<Vec<[f32; 5]>> = OnceLock::new();
+    T.get_or_init(|| {
+        let mut out = Vec::with_capacity(TRANSFORM_ROTATION_ROW_COUNT);
+        for line in TRANSFORM_ROTATION_COEFFS_CSV.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let row: Vec<f32> = line
+                .split(',')
+                .map(|f| {
+                    f.trim()
+                        .parse::<f32>()
+                        .unwrap_or_else(|_| panic!("non-f32 rotation element: {f:?}"))
+                })
+                .collect();
+            assert_eq!(
+                row.len(),
+                TRANSFORM_ROTATION_ROW_LEN,
+                "transform-rotation row must hold {TRANSFORM_ROTATION_ROW_LEN} f32, got {}",
+                row.len()
+            );
+            out.push([row[0], row[1], row[2], row[3], row[4]]);
+        }
+        assert_eq!(
+            out.len(),
+            TRANSFORM_ROTATION_ROW_COUNT,
+            "transform-rotation-coeffs.csv must hold {TRANSFORM_ROTATION_ROW_COUNT} rows, got {}",
+            out.len()
+        );
+        out
+    })
+}
+
+/// The four f64 const inputs to the runtime MDCT window/twiddle builder
+/// `cook.dll!0x3290` — `{2.0, 0.25, π, 0.5}` (`tables/`
+/// `mdct-window-builder-consts.csv`, RVA `0x8c20`).
+///
+/// These are the constants the builder multiplies/divides by when it
+/// computes the full-length sine table, cos/sin rotation twiddles and the
+/// sqrt-weighted cosine window at decode time (`provenance/06` Ask 2). The
+/// **runtime window/twiddle values themselves stay a GAP** (built lazily
+/// at decode time for the per-frame block length, never in the file
+/// image); only the const inputs are pinned here.
+///
+/// The CSV carries a `rva,value,role` header and one row per constant; the
+/// loader reads the `value` column (index 1).
+pub fn mdct_window_builder_consts() -> [f64; 4] {
+    static T: OnceLock<[f64; 4]> = OnceLock::new();
+    *T.get_or_init(|| {
+        let mut out = Vec::with_capacity(MDCT_WINDOW_BUILDER_CONSTS_LEN);
+        for line in MDCT_WINDOW_BUILDER_CONSTS_CSV.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("rva,") {
+                continue;
+            }
+            let value = line
+                .split(',')
+                .nth(1)
+                .expect("window-builder-consts row has a value column");
+            out.push(
+                value
+                    .trim()
+                    .parse::<f64>()
+                    .unwrap_or_else(|_| panic!("non-f64 window-builder const: {value:?}")),
+            );
+        }
+        assert_eq!(
+            out.len(),
+            MDCT_WINDOW_BUILDER_CONSTS_LEN,
+            "mdct-window-builder-consts.csv must hold {MDCT_WINDOW_BUILDER_CONSTS_LEN} values, got {}",
+            out.len()
+        );
+        [out[0], out[1], out[2], out[3]]
     })
 }
 
@@ -473,6 +689,133 @@ mod tests {
                 w.len()
             );
         }
+    }
+
+    #[test]
+    fn spectral_codebook_rows_match_symbol_counts() {
+        let codes = spectral_codebook_codes();
+        let lens = spectral_codebook_code_lengths();
+        for b in 0..7 {
+            assert_eq!(
+                codes[b].len(),
+                SPECTRAL_CODEBOOK_SYMBOL_COUNTS[b],
+                "codes cb{b}"
+            );
+            assert_eq!(
+                lens[b].len(),
+                SPECTRAL_CODEBOOK_SYMBOL_COUNTS[b],
+                "lens cb{b}"
+            );
+            assert_eq!(codes[b].len() as u32, spectral_codebook_dims()[b]);
+        }
+    }
+
+    #[test]
+    fn spectral_codebook_every_code_fits_its_length() {
+        // .meta: "each code < 2^(its code-length)".
+        let codes = spectral_codebook_codes();
+        let lens = spectral_codebook_code_lengths();
+        for b in 0..7 {
+            for (s, (&c, &l)) in codes[b].iter().zip(lens[b].iter()).enumerate() {
+                assert!(
+                    (1..=32).contains(&l),
+                    "cb{b} sym{s} length {l} out of range"
+                );
+                if l < 32 {
+                    assert!(c < (1u32 << l), "cb{b} sym{s} code {c} exceeds {l} bits");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spectral_codebook_kraft_sums_match_meta() {
+        // .meta Kraft = Σ 2^-len per codebook.
+        let want = [
+            1.000427f64,
+            1.000275,
+            1.000031,
+            1.001938,
+            1.002167,
+            1.308594,
+            1.0,
+        ];
+        let lens = spectral_codebook_code_lengths();
+        for b in 0..7 {
+            let kraft: f64 = lens[b].iter().map(|&l| 2f64.powi(-(l as i32))).sum();
+            assert!(
+                (kraft - want[b]).abs() < 5e-4,
+                "cb{b} Kraft {kraft} vs meta {}",
+                want[b]
+            );
+        }
+    }
+
+    #[test]
+    fn spectral_codebook_distinct_codewords_form_prefix_code() {
+        // .meta: distinct codewords form a proper prefix code; only the
+        // max-length escape codewords are duplicated. Verify no distinct
+        // codeword is a proper prefix of another (a prefix-free set).
+        let codes = spectral_codebook_codes();
+        let lens = spectral_codebook_code_lengths();
+        for b in 0..7 {
+            // Collect distinct (len, code) codewords.
+            let mut words: Vec<(u32, u32)> = codes[b]
+                .iter()
+                .zip(lens[b].iter())
+                .map(|(&c, &l)| (l, c))
+                .collect();
+            words.sort_unstable();
+            words.dedup();
+            for &(la, ca) in &words {
+                for &(lb, cb) in &words {
+                    if la < lb {
+                        // Is `ca` (la bits) a prefix of `cb` (lb bits)?
+                        if (cb >> (lb - la)) == ca {
+                            panic!("cb{b}: codeword ({la},{ca}) prefixes ({lb},{cb})");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn category_cost_lut_is_specced_sequence() {
+        // spec/05 §2.2 / .meta: {52, 47, 43, 37, 29, 22, 16}, strictly decreasing.
+        assert_eq!(category_cost_lut(), &[52, 47, 43, 37, 29, 22, 16]);
+        assert_eq!(category_cost_lut().len(), CATEGORY_COST_LUT_LEN);
+        for w in category_cost_lut().windows(2) {
+            assert!(w[0] > w[1], "cost LUT must be strictly decreasing: {w:?}");
+        }
+    }
+
+    #[test]
+    fn transform_rotation_shape_and_range() {
+        let rows = transform_rotation_coeffs();
+        assert_eq!(rows.len(), TRANSFORM_ROTATION_ROW_COUNT);
+        // .meta: values lie in (-1.575, 1.999).
+        for r in rows {
+            for &v in r {
+                assert!(
+                    v > -1.575 && v < 1.999,
+                    "rotation value {v} out of documented range"
+                );
+            }
+        }
+        // .meta: columns 0 and 2 are equal in 71/74 groups.
+        let equal_cols = rows.iter().filter(|r| r[0] == r[2]).count();
+        assert_eq!(equal_cols, 71, "expected 71 groups with col0 == col2");
+    }
+
+    #[test]
+    fn window_builder_consts_match_spec() {
+        // .meta: {2.0, 0.25, π, 0.5}.
+        let c = mdct_window_builder_consts();
+        assert_eq!(c[0], 2.0);
+        assert_eq!(c[1], 0.25);
+        assert_eq!(c[2], std::f64::consts::PI);
+        assert_eq!(c[3], 0.5);
     }
 
     #[test]

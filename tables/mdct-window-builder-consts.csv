@@ -1,0 +1,5 @@
+rva,value,role
+0x8c20,2.0,denominator 2.0 (sqrt-window normalisation, 0x8c20)
+0x8c28,0.25,phase constant 0.25 (0x8c28)
+0x8c30,3.141592653589793,pi (angle base for sin/cos twiddles + window, 0x8c30)
+0x8c38,0.5,half-sample bias 0.5 (0x8c38)
