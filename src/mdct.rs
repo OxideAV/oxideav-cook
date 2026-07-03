@@ -54,9 +54,64 @@
 //! access only, not the transform.
 
 use crate::{
-    tables::{mdct_windows, MDCT_WINDOWS_TOTAL_LEN, MDCT_WINDOW_ROW_LENS},
+    tables::{
+        mdct_window_builder_consts, mdct_windows, MDCT_WINDOWS_TOTAL_LEN, MDCT_WINDOW_ROW_LENS,
+    },
     Error,
 };
+
+/// `.rdata` base RVA of the runtime MDCT window/twiddle builder's four f64
+/// const inputs (`0x8c20`, `provenance/06` Ask 2).
+pub const MDCT_WINDOW_BUILDER_CONSTS_RVA: u32 = 0x8c20;
+
+/// The four f64 const inputs to the runtime window/twiddle builder
+/// `cook.dll!0x3290`, in stored order — `{2.0, 0.25, π, 0.5}`
+/// (`tables/mdct-window-builder-consts.csv`, RVA `0x8c20`).
+///
+/// `provenance/06` Ask 2 pins these as the constants the builder
+/// multiplies/divides by (`2.0` normalisation denominator at `0x8c20`,
+/// `0.25` phase constant at `0x8c28`, `π` angle base at `0x8c30`, `0.5`
+/// half-sample bias at `0x8c38`) when it computes — at **decode** time, for
+/// the per-frame block length `N` — the length-`N` sine table, the
+/// length-`N/2` cos/sin rotation twiddles, and the length-`N/2+1`
+/// sqrt-weighted cosine window into the per-channel heap state.
+///
+/// The **runtime window/twiddle values themselves stay a GAP**: they are
+/// built lazily at decode time and are never in the file image
+/// (`provenance/06`: only the short `N = 8` twiddles are built at init,
+/// verified as `cos(π/8) = 0.9239`, `sin(π/8) = 0.3827`; the long
+/// `N = 1024` window/twiddles need a `RADecode` drive the extractor could
+/// not orchestrate). This accessor exposes only the pinned const inputs and
+/// the documented build structure — it does **not** reconstruct the
+/// builder's (unpinned) formula.
+#[must_use]
+pub fn window_builder_consts() -> [f64; 4] {
+    mdct_window_builder_consts()
+}
+
+/// The window-builder normalisation denominator `2.0` (RVA `0x8c20`).
+#[must_use]
+pub fn window_builder_denominator() -> f64 {
+    window_builder_consts()[0]
+}
+
+/// The window-builder phase constant `0.25` (RVA `0x8c28`).
+#[must_use]
+pub fn window_builder_phase() -> f64 {
+    window_builder_consts()[1]
+}
+
+/// The window-builder angle base `π` (RVA `0x8c30`).
+#[must_use]
+pub fn window_builder_pi() -> f64 {
+    window_builder_consts()[2]
+}
+
+/// The window-builder half-sample bias `0.5` (RVA `0x8c38`).
+#[must_use]
+pub fn window_builder_half_bias() -> f64 {
+    window_builder_consts()[3]
+}
 
 /// Number of stored MDCT half-windows
 /// (`tables/mdct-windows.meta`: *"rows: 3,7,15,31,64"*).
@@ -226,6 +281,25 @@ pub fn mdct_full_window(len: MdctWindowLength) -> &'static [f32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_builder_consts_named_accessors() {
+        // provenance/06 Ask 2 / .meta: {2.0, 0.25, π, 0.5} at 0x8c20..0x8c38.
+        assert_eq!(MDCT_WINDOW_BUILDER_CONSTS_RVA, 0x8c20);
+        assert_eq!(window_builder_denominator(), 2.0);
+        assert_eq!(window_builder_phase(), 0.25);
+        assert_eq!(window_builder_pi(), std::f64::consts::PI);
+        assert_eq!(window_builder_half_bias(), 0.5);
+        assert_eq!(
+            window_builder_consts(),
+            [
+                window_builder_denominator(),
+                window_builder_phase(),
+                window_builder_pi(),
+                window_builder_half_bias()
+            ]
+        );
+    }
 
     #[test]
     fn constants_match_meta_and_audit_14() {
