@@ -312,6 +312,7 @@ pub mod backend;
 pub mod bit_alloc;
 pub mod bitreader;
 pub mod category;
+pub mod codebook;
 pub mod cookie;
 pub mod coupling;
 pub mod coupling_control;
@@ -353,6 +354,7 @@ pub use category::{
     category_parameters, gain_step_via_scale_ladder, CategoryIndex, CategoryParameters,
     CATEGORY_COUNT, GAIN_STEP_CENTRE_CATEGORY, MAX_CATEGORY_INDEX,
 };
+pub use codebook::{spectral_huffman, SpectralHuffman, CODEBOOK_COUNT};
 pub use cookie::{CookCookie, SelectorFamily, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
 pub use coupling::{CouplingMode, StereoMode, STEREO_MODE_MAX, STEREO_MODE_MIN};
 pub use coupling_control::{
@@ -651,6 +653,26 @@ pub enum Error {
     SpectralCodebookOutOfRange {
         /// The supplied codebook index.
         got: u8,
+    },
+    /// A spectral-symbol index was outside `0..symbol_count()` for its
+    /// codebook (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md`
+    /// §3.1 — the seven codebooks have symbol counts
+    /// `{196, 100, 49, 625, 256, 243, 32}`).
+    SpectralSymbolOutOfRange {
+        /// The supplied symbol index.
+        got: u32,
+        /// The codebook's symbol count.
+        count: u32,
+    },
+    /// The §3.1 spectral VLC walk (`cook.dll!0x3a50`) read
+    /// [`max_code_length`](codebook::SpectralHuffman::max_code_length) bits
+    /// without matching any codeword — a malformed or exhausted bitstream
+    /// (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §3.1).
+    SpectralVlcNoMatch {
+        /// The codebook (`0..=6`) whose walk found no match.
+        codebook: u8,
+        /// Bits consumed before giving up (the codebook's max code length).
+        bits: u32,
     },
     /// A joint-stereo coupling index `j` was `>=` the coupling table
     /// length `Ncoup` for the §4.2 mirror-index split
@@ -1025,6 +1047,16 @@ impl core::fmt::Display for Error {
                 "oxideav-cook: spectral-codebook index {got} is out of range \
                  (max is {})",
                 spectral::MAX_SPECTRAL_CODEBOOK_INDEX
+            ),
+            Error::SpectralSymbolOutOfRange { got, count } => write!(
+                f,
+                "oxideav-cook: spectral-symbol index {got} is out of range \
+                 (codebook has {count} symbols; spec/05 §3.1)"
+            ),
+            Error::SpectralVlcNoMatch { codebook, bits } => write!(
+                f,
+                "oxideav-cook: spectral VLC walk found no codeword in \
+                 codebook {codebook} within {bits} bits (spec/05 §3.1)"
             ),
             Error::CouplingIndexOutOfRange { got, ncoup } => write!(
                 f,
