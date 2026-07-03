@@ -691,6 +691,50 @@ numeric facts tables + real-stream validation).
   long/short window selection and per-flavor weight routing also stay
   GAPs. New typed errors `Error::OutputWindowLengthMismatch` /
   `Error::OverlapAddLengthMismatch`.
+- **§5 MLT/IMLT synthesis back end (spectra → PCM bytes)** — the entire
+  post-entropy half of the backend frame decode is now assembled,
+  milestone by milestone.
+  [`mdct_full_window`](src/mdct.rs) mirror-completes each stored
+  monotone-decreasing half-window into its full `2L`-tap symmetric
+  Princen-Bradley window (the hop-TDAC identity `W[k]² + W[k+L]² = 1`
+  follows from the pinned in-row identity — values bit-identical, only
+  re-ordered). [`imlt_direct`](src/imlt.rs) / [`mlt_direct`](src/imlt.rs)
+  wire the definition-level inverse/forward MLT the stage is pinned *as*
+  (spec/01 §5.1 *"inverse MDCT"*): the TDAC alias symmetry, linearity,
+  the tight-frame composition `MLT∘IMLT = 2·id`, and windowed
+  overlap-add **perfect reconstruction** over the stored 3/7/15/31
+  windows are pinned by tests (the binary's fast kernel — `0x5b70` +
+  `0xa1b0`, audit #16 — stays the recorded GAP; the
+  normalisation-convention caveat is documented, unverifiable until the
+  §3.2 entropy GAP lands). [`Synthesizer`](src/synthesis.rs) is the
+  streaming per-channel §5 state machine (iMLT → window → §1.2 gain →
+  overlap-add, zeroed warm-up tail); [`pcm`](src/pcm.rs) converts to the
+  validator-pinned 16-bit LE interleaved format;
+  [`CallPcmAssembler`](src/assembler.rs) is the `+0x20` carry-buffer
+  cadence queue (the 144-call walk reproduces the pinned 8 192 + 143 ×
+  20 480 = 2 936 832-byte accounting with the constant 12 288-byte
+  three-frame backlog); [`SynthesisBackend`](src/backend.rs) +
+  [`Driver::synthesized_call`](src/driver.rs) assemble it all into the
+  **resume-from-blocker `RADecode` analog** — caller-supplied
+  post-entropy spectra (the §3.2 GAP input) in, per-call PCM out,
+  session cursor advanced. Pinned end-to-end in
+  `tests/synthesis_realstream.rs`: the 144-real-packet silent-spectra
+  walk is **byte-identical to the observe-gate output** call-by-call,
+  and a mono hop-64 roundtrip reconstructs a source signal through the
+  full spectra → PCM-bytes path. The frame-length
+  (`2 × samples_per_frame`) synthesis window is not among the five
+  extracted rows and stays a caller-supplied GAP input.
+- **§1.1 real-data finding (recorded docs-gap)** — 12 of the validated
+  stream's 144 call heads carry a leading 6-bit field `< 6`, which
+  biases negative under the spec/05 §1.1 *"field = segment_count + 6"*
+  reading (packet 0 opens with the well-formed raw 29 → 23 segments,
+  but packets 4/5 open with raw 4); additionally packet 0's slot-1
+  boundary is not a well-formed frame head, consistent with the spec/01
+  §5 pin that the backend is invoked **once per call** with
+  carry-buffer consumption for the remaining sub-packets. Both pinned
+  by `tests/synthesis_realstream.rs`; `decode_call`'s real-decode gate
+  now walks the frame body once per call at the call head, and the
+  negative-bias semantics await a docs clarification.
 
 ## Not yet implemented
 
@@ -742,7 +786,15 @@ stereo decouple, and their channel-routed integration into a `FrameSpectrum`
 iMDCT feed — is also wired in [`reconstruct`](src/reconstruct.rs) /
 [`frame`](src/frame.rs), consuming the entropy-decoded values as caller
 inputs so a future Validator round that dumps the BSS codebooks can feed
-them straight in. **What is not yet wired** is the bit-level entropy descent
+them straight in. The **§5 synthesis back end past the iMDCT feed is now
+fully wired too** ([`imlt`](src/imlt.rs), [`synthesis`](src/synthesis.rs),
+[`pcm`](src/pcm.rs), [`assembler`](src/assembler.rs),
+[`backend`](src/backend.rs), `Driver::synthesized_call`): given the
+entropy-decoded spectra, the crate produces the per-call 16-bit PCM
+bytes at the validator-pinned cadence, so the §3.2 codebook bytes are
+now the **only** stage between a real packet and audible PCM.
+
+**What is not yet wired** is the bit-level entropy descent
 past the §3 blocker (the step that *produces* those decoded values) and
 three **runtime-built-in-BSS** GAPs the trace explicitly
 leaves open (`docs/audio/cook/spec/05` §6): the per-symbol spectral
@@ -756,4 +808,16 @@ the entropy + transform walk can be wired bit-exactly. Until then the
 real-decode gate stops at the typed
 `Error::SpectralCodebookBytesUnavailable` blocker (the observe half —
 gate bit `1`, zeroed overlap-add output per validation/04 §4.3 — is
-implemented).
+implemented). Three further recorded gaps ride alongside: the
+**frame-length synthesis window** (`2 × samples_per_frame` taps; only
+the 3/7/15/31/64 rows are extracted — runtime-built like the
+codebooks), the **§1.1 negative-bias semantics** (12 of 144 real call
+heads carry a leading 6-bit field `< 6`, contradicting the
+`segment_count + 6` reading — see the real-data finding above), and
+the **`+0x20` carry-buffer mechanics** (where the four remaining frame
+bitstreams sit inside a call; the validated stream shows the 93-byte
+slot boundaries after slot 0 are not frame heads). The binary's iMDCT
+**normalisation/sign convention** is also unverifiable until entropy
+lands — the wired transform is the canonical TDAC-perfect-
+reconstruction closed form, with the caveat recorded in
+[`imlt`](src/imlt.rs).
