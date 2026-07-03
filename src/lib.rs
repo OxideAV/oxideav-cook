@@ -344,8 +344,9 @@ pub mod transform;
 pub use assembler::CallPcmAssembler;
 pub use backend::SynthesisBackend;
 pub use bit_alloc::{
-    bit_alloc_category_for_position, BitAllocAxisPosition, BitAllocCategory, BIT_ALLOC_AXIS_LEN,
-    BIT_ALLOC_CATEGORY_COUNT, MAX_BIT_ALLOC_AXIS_POSITION, MAX_BIT_ALLOC_CATEGORY,
+    bit_alloc_category_for_position, category_bit_cost, BitAllocAxisPosition, BitAllocCategory,
+    BIT_ALLOC_AXIS_LEN, BIT_ALLOC_CATEGORY_COUNT, CATEGORY_COST_LUT_RVA,
+    MAX_BIT_ALLOC_AXIS_POSITION, MAX_BIT_ALLOC_CATEGORY,
 };
 pub use bitreader::{
     FrameBitReader, CTX_BIT_CURSOR_OFFSET, CTX_BIT_LIMIT_OFFSET, CTX_BIT_POSITION_OFFSET,

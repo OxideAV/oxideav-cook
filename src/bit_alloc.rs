@@ -48,6 +48,9 @@
 //!   for const tests) — that way the type carries the invariant that any
 //!   value of it is in-range for the table.
 //! - [`bit_alloc_category_for_position`] — the LUT lookup itself.
+//! - [`category_bit_cost`] — the per-category expected bit-cost lookup
+//!   over the `0x8f38` LUT `{52, 47, 43, 37, 29, 22, 16}` (`spec/05 §2.2`),
+//!   the cost the bit-allocation pass subtracts from the frame bit budget.
 //!
 //! ## What this module does *not* cover
 //!
@@ -65,7 +68,34 @@
 //! corresponding audit point. No algorithmic content beyond the
 //! monotone-nondecreasing structural fact is wired here.
 
-use crate::{tables::category_index_lut, Error};
+use crate::{
+    category::CategoryIndex,
+    tables::{category_cost_lut, category_index_lut},
+    Error,
+};
+
+/// `.rdata` RVA of the per-category expected bit-cost LUT (`0x8f38`,
+/// `spec/05 §2.2`).
+pub const CATEGORY_COST_LUT_RVA: u32 = 0x8f38;
+
+/// The seven per-category expected bit-costs `{52, 47, 43, 37, 29, 22, 16}`
+/// (`tables/category-cost-lut.csv`, RVA `0x8f38`, `spec/05 §2.2`).
+///
+/// The `.meta` records this as the per-category cost the bit-allocation
+/// pass `cook.dll!0x4800` subtracts from the running frame bit budget each
+/// refinement round until the budget is met: read as `[category*4 +
+/// 0x8f38]`, indexed by the seven-way quantiser category (0..6) — the same
+/// index space as the [`crate::category::CategoryParameters`] tables, not
+/// the 51-position bit-allocation axis above. Strictly decreasing, so a
+/// higher category costs fewer bits.
+///
+/// This wires the typed **cost lookup**; the full §2.2 category-assignment
+/// refinement loop that consumes it (the exact iteration order / stopping
+/// rule, visible only as the `0x10`/`0x20` loop bounds) stays a recorded
+/// `spec/05 §2.2` DOCS-GAP.
+pub fn category_bit_cost(category: CategoryIndex) -> u32 {
+    category_cost_lut()[category.as_usize()]
+}
 
 /// Length of the LUT's input axis — `51` positions (audit-pinned at
 /// `tables/category-index-lut.meta` line `element_count: 51`).
@@ -294,6 +324,21 @@ mod tests {
             );
             prev = cat;
         }
+    }
+
+    #[test]
+    fn category_bit_cost_is_specced_and_decreasing() {
+        // spec/05 §2.2 / .meta: {52, 47, 43, 37, 29, 22, 16}, strictly
+        // decreasing across the seven quantiser categories.
+        let want = [52u32, 47, 43, 37, 29, 22, 16];
+        let mut prev = u32::MAX;
+        for (c, &w) in want.iter().enumerate() {
+            let cost = category_bit_cost(CategoryIndex::new(c as u8).unwrap());
+            assert_eq!(cost, w, "cost for category {c}");
+            assert!(cost < prev, "cost LUT not strictly decreasing at {c}");
+            prev = cost;
+        }
+        assert_eq!(CATEGORY_COST_LUT_RVA, 0x8f38);
     }
 
     #[test]
