@@ -1,5 +1,7 @@
 # oxideav-cook
 
+[![CI](https://github.com/OxideAV/oxideav-cook/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-cook/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-cook.svg)](https://crates.io/crates/oxideav-cook) [![docs.rs](https://docs.rs/oxideav-cook/badge.svg)](https://docs.rs/oxideav-cook) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Pure-Rust RealAudio Cook audio codec for the
 [oxideav](https://github.com/OxideAV/oxideav-workspace) framework.
 
