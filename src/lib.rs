@@ -339,6 +339,7 @@ pub mod subband;
 pub mod subpacket;
 pub mod synthesis;
 pub mod tables;
+pub mod transform;
 
 pub use assembler::CallPcmAssembler;
 pub use backend::SynthesisBackend;
@@ -435,6 +436,11 @@ pub use subband::{
 };
 pub use subpacket::SubPacketLayout;
 pub use synthesis::Synthesizer;
+pub use transform::{
+    rotation_group, rotation_group_rva, rotation_table_end_rva, TRANSFORM_ROTATION_GROUP_COUNT,
+    TRANSFORM_ROTATION_GROUP_STRIDE, TRANSFORM_ROTATION_RVA,
+    TRANSFORM_ROTATION_SELECTOR_BASE_GROUP,
+};
 
 /// Crate-local error type. Concrete variants land as the rebuild rounds
 /// populate the codec pipeline.
@@ -673,6 +679,15 @@ pub enum Error {
         codebook: u8,
         /// Bits consumed before giving up (the codebook's max code length).
         bits: u32,
+    },
+    /// An iMDCT rotation-group index was `>=` the 74-group
+    /// `0xa1b0` rotation table
+    /// (`docs/audio/cook/tables/README.md`, `provenance/06` Ask 3).
+    TransformRotationGroupOutOfRange {
+        /// The supplied group index.
+        got: usize,
+        /// The number of rotation groups (74).
+        count: usize,
     },
     /// A joint-stereo coupling index `j` was `>=` the coupling table
     /// length `Ncoup` for the §4.2 mirror-index split
@@ -1057,6 +1072,11 @@ impl core::fmt::Display for Error {
                 f,
                 "oxideav-cook: spectral VLC walk found no codeword in \
                  codebook {codebook} within {bits} bits (spec/05 §3.1)"
+            ),
+            Error::TransformRotationGroupOutOfRange { got, count } => write!(
+                f,
+                "oxideav-cook: iMDCT rotation group {got} is out of range \
+                 (table has {count} groups; 0xa1b0)"
             ),
             Error::CouplingIndexOutOfRange { got, ncoup } => write!(
                 f,
