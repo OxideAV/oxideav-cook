@@ -8,6 +8,16 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `imlt::imlt` — the **`O(N log N)` inverse MLT** for power-of-two
+  sizes (the codec's frame sizes 256/512/1024, spec/02 §1), falling
+  back to the direct evaluation otherwise. Pure algebra on the same
+  cosine kernel: the definition folds onto a DCT-IV by its own
+  symmetries, and the DCT-IV is read off the odd bins of a zero-padded
+  `4N`-point radix-2 FFT with a half-bin twiddle. Tests pin numeric
+  equality against `imlt_direct` across sizes 4…1024 (≤ 1e-4 of peak),
+  bit-identical fallback on non-power-of-two sizes, and the zero/empty
+  contracts. `Synthesizer` now transforms through it, making the
+  frame-size (1024-line) synthesis path practical. 3 tests.
 - `Driver::synthesized_call` — the **resume-from-blocker `RADecode`
   analog**: stages 1+2 (validate / descramble / split), then the §5
   synthesis of caller-supplied post-entropy spectra (one

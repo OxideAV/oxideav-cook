@@ -136,6 +136,109 @@ pub fn mlt_direct(block: &[f32]) -> Result<Vec<f32>, Error> {
     Ok(out)
 }
 
+/// Inverse MLT — same closed form as [`imlt_direct`], computed in
+/// `O(N log N)` for power-of-two sizes (the codec's frame sizes are
+/// 256 / 512 / 1024 — spec/02 §1) and falling back to the direct
+/// evaluation otherwise.
+///
+/// Mathematically identical to [`imlt_direct`] (the unit tests pin the
+/// equality across sizes): the definition is folded onto a DCT-IV
+/// (`y[n] = (2/N)·g(n + N/2)` with `g` extended by the kernel's own
+/// `g(t) = −g(2N−1−t)` / `g(t) = −g(t−2N)` symmetries), and the DCT-IV
+/// is read off the odd bins of a zero-padded `4N`-point FFT with a
+/// half-bin twiddle — pure algebra on the same cosine kernel, no new
+/// numeric facts.
+///
+/// # Errors
+///
+/// Returns [`Error::TransformSizeZero`] when `spectrum` is empty.
+pub fn imlt(spectrum: &[f32]) -> Result<Vec<f32>, Error> {
+    let n = spectrum.len();
+    if n == 0 {
+        return Err(Error::TransformSizeZero);
+    }
+    if !n.is_power_of_two() {
+        return imlt_direct(spectrum);
+    }
+    let mut out = vec![0f32; 2 * n];
+    if spectrum.iter().all(|&c| c == 0.0) {
+        return Ok(out);
+    }
+
+    // DCT-IV via the odd bins of a 4N-point FFT:
+    //   C[k] = Σ_n X[n]·cos((π/N)(n+½)(k+½))
+    //        = Re( e^{−iπ(k+½)/(2N)} · Σ_n X[n]·e^{−i2πn(2k+1)/(4N)} ).
+    let m = 4 * n;
+    let mut re = vec![0f64; m];
+    let mut im = vec![0f64; m];
+    for (i, &x) in spectrum.iter().enumerate() {
+        re[i] = f64::from(x);
+    }
+    fft_in_place(&mut re, &mut im);
+    let nf = n as f64;
+    let scale = 2.0 / nf;
+    let mut c = vec![0f64; n];
+    for (k, ck) in c.iter_mut().enumerate() {
+        let ang = -core::f64::consts::PI * (k as f64 + 0.5) / (2.0 * nf);
+        let (s, co) = ang.sin_cos();
+        let bin = 2 * k + 1;
+        *ck = co * re[bin] - s * im[bin];
+    }
+    // Fold the DCT-IV onto the 2N-sample IMLT output:
+    //   y[n] = (2/N)·C[n+N/2]           for n ∈ [0, N/2)
+    //   y[n] = −(2/N)·C[3N/2−1−n]       for n ∈ [N/2, 3N/2)
+    //   y[n] = −(2/N)·C[n−3N/2]         for n ∈ [3N/2, 2N)
+    let half = n / 2;
+    for (i, sample) in out.iter_mut().enumerate() {
+        let v = if i < half {
+            c[i + half]
+        } else if i < n + half {
+            -c[n + half - 1 - i]
+        } else {
+            -c[i - n - half]
+        };
+        *sample = (scale * v) as f32;
+    }
+    Ok(out)
+}
+
+/// Iterative radix-2 decimation-in-time FFT (forward,
+/// `e^{−i2πjk/len}` kernel) over split re/im f64 buffers whose length
+/// is a power of two.
+fn fft_in_place(re: &mut [f64], im: &mut [f64]) {
+    let len = re.len();
+    debug_assert!(len.is_power_of_two());
+    // Bit-reversal permutation.
+    let bits = len.trailing_zeros();
+    for i in 0..len {
+        let j = i.reverse_bits() >> (usize::BITS - bits);
+        if j > i {
+            re.swap(i, j);
+            im.swap(i, j);
+        }
+    }
+    // Butterfly passes.
+    let mut width = 2usize;
+    while width <= len {
+        let step = -2.0 * core::f64::consts::PI / width as f64;
+        for start in (0..len).step_by(width) {
+            for k in 0..width / 2 {
+                let ang = step * k as f64;
+                let (ws, wc) = ang.sin_cos();
+                let a = start + k;
+                let b = a + width / 2;
+                let tr = wc * re[b] - ws * im[b];
+                let ti = wc * im[b] + ws * re[b];
+                re[b] = re[a] - tr;
+                im[b] = im[a] - ti;
+                re[a] += tr;
+                im[a] += ti;
+            }
+        }
+        width *= 2;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,6 +331,52 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn fast_imlt_matches_direct_on_power_of_two_sizes() {
+        // The O(N log N) path is the same closed form, algebraically
+        // refactored — pin the numeric equality against the definition
+        // across the codec's frame sizes and smaller powers of two.
+        let mut seed = 0xFA57u32;
+        for n in [4usize, 8, 64, 256, 512, 1024] {
+            let spectrum: Vec<f32> = (0..n).map(|_| prng(&mut seed) * 100.0).collect();
+            let fast = imlt(&spectrum).unwrap();
+            let direct = imlt_direct(&spectrum).unwrap();
+            assert_eq!(fast.len(), direct.len());
+            let peak = direct.iter().fold(0f32, |a, &v| a.max(v.abs())).max(1.0);
+            for i in 0..fast.len() {
+                assert!(
+                    (fast[i] - direct[i]).abs() <= 1e-4 * peak,
+                    "fast/direct mismatch n={n}, i={i}: {} vs {}",
+                    fast[i],
+                    direct[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fast_imlt_falls_back_to_direct_on_other_sizes() {
+        // Non-power-of-two sizes (the vendored 3/7/15/31 window hops)
+        // take the direct path — bit-identical results.
+        let mut seed = 0xFA11u32;
+        for n in [3usize, 7, 15, 31, 100] {
+            let spectrum: Vec<f32> = (0..n).map(|_| prng(&mut seed)).collect();
+            assert_eq!(
+                imlt(&spectrum).unwrap(),
+                imlt_direct(&spectrum).unwrap(),
+                "fallback mismatch at n={n}"
+            );
+        }
+    }
+
+    #[test]
+    fn fast_imlt_zero_and_empty_match_direct_contract() {
+        assert_eq!(imlt(&[]).unwrap_err(), Error::TransformSizeZero);
+        let y = imlt(&[0.0; 64]).unwrap();
+        assert_eq!(y.len(), 128);
+        assert!(y.iter().all(|&v| v == 0.0));
     }
 
     #[test]

@@ -14,7 +14,7 @@
 //! [`Synthesizer`] is the per-channel streaming state machine of the §5
 //! stage order. Each [`Synthesizer::push_spectrum`] call:
 //!
-//! 1. runs the [`crate::imlt::imlt_direct`] inverse transform (`N`
+//! 1. runs the [`crate::imlt::imlt`] inverse transform (`N`
 //!    spectral lines → `2N` time samples),
 //! 2. multiplies by the full `2N`-tap Princen-Bradley window,
 //! 3. optionally applies the §1.2 per-sub-block gain profile
@@ -49,7 +49,7 @@
 //! from the vendored table or from the caller. Nothing numeric is
 //! invented.
 
-use crate::{gain::apply_gain_blocks, imlt::imlt_direct, mdct, Error};
+use crate::{gain::apply_gain_blocks, imlt::imlt, mdct, Error};
 
 /// Streaming per-channel §5 synthesis state — inverse transform →
 /// window → gain → overlap-add, with the previous block's tail carried
@@ -165,8 +165,9 @@ impl Synthesizer {
                 hop,
             });
         }
-        // §5 stage 1: inverse transform (N → 2N).
-        let mut block = imlt_direct(spectrum)?;
+        // §5 stage 1: inverse transform (N → 2N; the fast path for
+        // power-of-two hops, definition-equal — see crate::imlt).
+        let mut block = imlt(spectrum)?;
         // §5 stage 2: synthesis window.
         for (s, &w) in block.iter_mut().zip(self.window.iter()) {
             *s *= w;

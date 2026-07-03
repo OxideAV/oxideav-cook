@@ -378,7 +378,7 @@ pub use gain::{
     apply_gain_blocks, apply_gain_envelope, expand_gain_envelope, gain_factor_for_index,
     read_segment_count, GainSegment, GAIN_POS_WINDOW, SEGMENT_COUNT_BIAS, SEGMENT_COUNT_FIELD_BITS,
 };
-pub use imlt::{imlt_direct, mlt_direct};
+pub use imlt::{imlt, imlt_direct, mlt_direct};
 pub use index_decomp::{
     decompose_index, index_radix, index_recip, reciprocal_quotient, INDEX_RADIX, INDEX_RECIP,
     INDEX_RECIP_COUNT, INDEX_RECIP_RVA, INDEX_RECIP_SCALE, INDEX_RECIP_SHIFT,
