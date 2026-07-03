@@ -23,6 +23,42 @@ numeric facts tables + real-stream validation).
 
 ## What works
 
+- **§3.2 spectral codebooks + the §3.1 VLC walk (docs-gap #1775 data
+  recovered)** — the docs Extractor round 6 dumped the runtime-built-in-BSS
+  spectral codebook code/length bytes by driving the vendor decoder's own
+  `RAInitDecoder` in the univdreams sandbox
+  (`docs/audio/cook/provenance/06-cook-univdreams-extraction.md`); they are
+  vendored as `tables/spectral-codebook-{codes,code-lengths}.csv` and read
+  through [`tables`](src/tables.rs) `OnceLock` loaders (Kraft-sum /
+  code-fits-length / proper-prefix-code tests). [`codebook`](src/codebook.rs)
+  turns each codebook's `(code, length)` pairs into a decode-ready
+  read-until-match lookup: [`SpectralHuffman::decode_symbol`](src/codebook.rs)
+  is the §3.1 VLC walk `cook.dll!0x3a50`, reading MSB-first through
+  [`FrameBitReader`](src/bitreader.rs) and emitting a symbol on the first
+  codeword match (the distinct codewords are a proper prefix code; the
+  escape-style duplicate max-length codewords resolve to their first symbol,
+  with [`is_escape_symbol`](src/codebook.rs) exposing the multiplicity — the
+  escape follow-on read stays a GAP). All 1301 symbols across the seven
+  codebooks round-trip through a real bit reader in tests.
+  [`spectral_decode`](src/spectral_decode.rs) bridges the walk to
+  per-coefficient quantised **digits**: [`decompose_symbol`](src/spectral_decode.rs)
+  peels a decoded packed symbol into its `dim` base-`radix` digits via the
+  already-wired §2.2 [`index_decomp`](src/index_decomp.rs) reciprocal-multiply
+  (`radix = level_count + 1`), [`decode_band_digits`](src/spectral_decode.rs)
+  runs a whole band, and [`natural_codebook_for`](src/spectral_decode.rs)
+  confirms `radix^dim_lo` equals each codebook's symbol count
+  `{196,100,49,625,256,243,32}` — the digits feed the existing
+  [`reconstruct_band`](src/reconstruct.rs) `values` input. The **level →
+  signed-value mapping, the per-band codebook selection, the gain-segment
+  and coupling-index VLC reads' codebook, the §4.3 coupling coefficients,
+  and the decode-time full-length (N=1024) window** remain recorded gaps
+  that gate a real-stream decode to PCM. Companion typed accessors landed
+  for the three sibling tables the same round recovered:
+  [`bit_alloc::category_bit_cost`](src/bit_alloc.rs) (the `0x8f38` §2.2
+  cost LUT), [`transform`](src/transform.rs) (the `0xa1b0` 74×5 iMDCT
+  rotation table, kernel use still a no-closed-form GAP), and
+  [`mdct::window_builder_consts`](src/mdct.rs) (the `0x8c20`
+  `{2.0,0.25,π,0.5}` runtime-window-builder inputs).
 - **Backend per-frame-body orchestrator** — [`frame`](src/frame.rs)
   assembles the statically-pinned prefix of the §0 backend frame-body
   stage order (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md`

@@ -8,6 +8,41 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **§3.2 spectral codebooks recovered — docs-gap #1775 closed on the data
+  side.** The docs Extractor round 6 dumped the runtime-built-in-BSS
+  codebook code/length bytes by driving the vendor decoder's own
+  `RAInitDecoder` in the univdreams sandbox. Vendored into the crate
+  (`tables/spectral-codebook-{codes,code-lengths}.csv`) with `OnceLock`
+  loaders and tests pinning the per-codebook symbol counts, code-fits-length,
+  the `.meta` Kraft sums, and the proper-prefix-code property of the distinct
+  codewords. Four sibling tables landed with them: the `0x8f38`
+  category-cost LUT `{52,47,43,37,29,22,16}`, the `0xa1b0` iMDCT rotation
+  table (74×5 flat facts), and the `0x8c20` window-builder consts
+  `{2.0,0.25,π,0.5}`.
+- **`codebook` — the §3.1 spectral Huffman VLC walk (`cook.dll!0x3a50`).**
+  `SpectralHuffman::for_codebook` builds a read-until-match lookup from the
+  recovered (code, length) pairs; `decode_symbol` reads MSB-first through
+  `FrameBitReader` and emits a symbol on the first codeword match.
+  Escape-style duplicate max-length codewords resolve to their first symbol
+  (`is_escape_symbol` exposes the multiplicity). Tests round-trip all 1301
+  symbols across the seven codebooks through a real bit reader.
+- **`spectral_decode` — entropy → per-coefficient quantised digits.**
+  Composes the VLC walk with the §2.2 division-free index decomposition
+  (`index_decomp`, radix = `level_count + 1`): `decompose_symbol` peels a
+  packed symbol into its `dim` base-radix digits; `decode_band_digits` runs
+  a whole band; `natural_codebook_for` confirms `radix^dim_lo` equals each
+  codebook's symbol count. The digits are the caller `values` input for
+  `reconstruct_band`.
+- **`transform` — typed `0xa1b0` iMDCT rotation-group accessors** (74 groups
+  of 5 f32, stride `0x14`, selector base group 2 = `0xa1d8`); the kernel's
+  use of them stays a no-closed-form GAP.
+- **`bit_alloc::category_bit_cost`** — the typed `0x8f38` per-category
+  bit-cost lookup for the §2.2 allocation loop.
+- **`mdct::window_builder_consts`** + per-role accessors for the runtime
+  window builder's `{2.0,0.25,π,0.5}` const inputs; the runtime window/twiddle
+  values stay a decode-time GAP.
+- New typed errors: `SpectralSymbolOutOfRange`, `SpectralVlcNoMatch`,
+  `TransformRotationGroupOutOfRange`.
 - `imlt::imlt` — the **`O(N log N)` inverse MLT** for power-of-two
   sizes (the codec's frame sizes 256/512/1024, spec/02 §1), falling
   back to the direct evaluation otherwise. Pure algebra on the same
