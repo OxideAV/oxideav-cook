@@ -212,6 +212,94 @@ impl FlavorRecord {
     }
 }
 
+// ---- §4.3 recovered coupling rotation table -------------------------
+//
+// The per-coupling-width coefficient table `spec/05` §4.3 recorded as a
+// runtime-built GAP was recovered by the docs round-8 init drive
+// (`provenance/06`, `tables/coupling-rotation-coeffs.meta`): the builder
+// `cook.dll!0x40a0` runs at `RAInitDecoder` (tail-called from the window
+// builder `0x3290`) and fills two buffers hung off the decode state —
+// 256 unit-circle `(cos θ, sin θ)` pairs at `+0x47b4` and a 512-entry
+// bit-reversal index at `+0x47b8` — for the recovered coupling width
+// `1 << 9 = 512` (state `+0x47ac`). The accessors below expose the
+// **logical** coefficient table `coef[j]` the §4.2 mirror split reads:
+// the permutation maps a coupling index onto its element slot in the
+// flattened pair buffer, and it is an involution (a bit reversal), so
+// `coef[j] = flat[perm[j]]`.
+
+/// The recovered coupling-index bit width (state `+0x1c` / `+0x47ac`):
+/// the init drive built the table for `Ncoup = 1 << 9`.
+pub const COUPLING_RECOVERED_BITS: u32 = 9;
+
+/// The recovered coupling table length `Ncoup = 512`.
+pub const COUPLING_RECOVERED_LEN: u32 = 1 << COUPLING_RECOVERED_BITS;
+
+/// The logical §4.2/§4.3 coupling coefficient table `coef[0..Ncoup]`,
+/// de-permuted from the two recovered buffers
+/// ([`crate::tables::coupling_rotation_coeffs`] flattened, indexed
+/// through [`crate::tables::coupling_index_permutation`]).
+///
+/// `coef[j]` is what `spec/05` §4.2 reads as the channel-0 factor for
+/// coupling index `j`; the channel-1 factor is the mirror partner
+/// `coef[Ncoup - 1 - j]`. The de-permuted table splits into a cosine
+/// half followed by a sine half (the recovered pairs are unit-circle),
+/// so the mirror pair behaves as the §4.2 `(cos θ_j, sin θ_j)` pan —
+/// pinned numerically by the unit tests from the recovered values
+/// alone.
+pub fn coupling_coefficient_table() -> &'static [f32] {
+    use std::sync::OnceLock;
+    static T: OnceLock<Vec<f32>> = OnceLock::new();
+    T.get_or_init(|| {
+        let pairs = crate::tables::coupling_rotation_coeffs();
+        let perm = crate::tables::coupling_index_permutation();
+        // Flatten the (cos, sin) pairs in buffer order, then read
+        // through the permutation: coef[j] = flat[perm[j]].
+        let flat: Vec<f32> = pairs.iter().flat_map(|p| p.iter().copied()).collect();
+        perm.iter().map(|&s| flat[s as usize]).collect()
+    })
+}
+
+/// One §4.3 coupling coefficient `coef[j]` of the recovered
+/// `Ncoup = 512` table.
+///
+/// # Errors
+///
+/// [`Error::CouplingIndexOutOfRange`] when
+/// `j >= `[`COUPLING_RECOVERED_LEN`].
+pub fn coupling_coefficient(j: u32) -> Result<f32, Error> {
+    if j >= COUPLING_RECOVERED_LEN {
+        return Err(Error::CouplingIndexOutOfRange {
+            got: j,
+            ncoup: COUPLING_RECOVERED_LEN,
+        });
+    }
+    Ok(coupling_coefficient_table()[j as usize])
+}
+
+/// The §4.2 mirror pan pair `(coef[j], coef[Ncoup-1-j])` for a coupling
+/// index of the recovered table — channel 0's and channel 1's factors.
+///
+/// # Errors
+///
+/// [`Error::CouplingIndexOutOfRange`] when `j >= Ncoup`.
+pub fn coupling_pan_pair(j: u32) -> Result<(f32, f32), Error> {
+    let partner = crate::spectral::mirror_partner_index(j, COUPLING_RECOVERED_LEN)?;
+    let t = coupling_coefficient_table();
+    Ok((t[j as usize], t[partner as usize]))
+}
+
+/// Split one coupled coefficient by the §4.2 mirror rotation over the
+/// **recovered** §4.3 table —
+/// [`crate::spectral::split_coupled_coefficient`] with the vendored
+/// values instead of a caller-supplied slice.
+///
+/// # Errors
+///
+/// [`Error::CouplingIndexOutOfRange`] when `j >= Ncoup`.
+pub fn split_coupled_recovered(c: f32, j: u32) -> Result<(f32, f32), Error> {
+    crate::spectral::split_coupled_coefficient(c, j, coupling_coefficient_table())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,5 +457,94 @@ mod tests {
         // And the classic pairing: coupled AND stereo (record 21).
         let r21 = flavor_record(21).unwrap();
         assert!(r21.is_coupled() && r21.is_stereo());
+    }
+
+    // ---- §4.3 recovered rotation table ------------------------------
+
+    #[test]
+    fn coupling_table_has_the_recovered_width() {
+        assert_eq!(COUPLING_RECOVERED_LEN, 512);
+        assert_eq!(
+            coupling_coefficient_table().len(),
+            COUPLING_RECOVERED_LEN as usize
+        );
+        assert_eq!(
+            crate::spectral::coupling_table_len(COUPLING_RECOVERED_BITS),
+            COUPLING_RECOVERED_LEN
+        );
+    }
+
+    #[test]
+    fn depermuted_table_is_a_cosine_then_sine_ramp() {
+        // Numeric structure of the recovered values (no formula was
+        // used to build them): coef[0] = 1, the first half decreases
+        // monotonically from +1 toward −1 (a cosine sweep), and the
+        // second half opens at 0 (coef[256] = sin 0).
+        let t = coupling_coefficient_table();
+        assert_eq!(t[0], 1.0);
+        for j in 1..256usize {
+            assert!(
+                t[j] < t[j - 1],
+                "cos half must decrease at {j}: {} !< {}",
+                t[j],
+                t[j - 1]
+            );
+        }
+        assert!(t[255] < -0.999, "cos half must approach -1");
+        assert!(t[256].abs() < 1e-6, "sine half must open at 0");
+    }
+
+    #[test]
+    fn mirror_pan_pairs_conserve_energy() {
+        // The §4.2 pair (coef[j], coef[Ncoup-1-j]) behaves as a
+        // (cos θ, sin θ) pan: its energy stays within ~1.3% of unity
+        // across the whole recovered table (the residual is the
+        // half-step phase offset between the two halves).
+        for j in 0..COUPLING_RECOVERED_LEN {
+            let (a, b) = coupling_pan_pair(j).unwrap();
+            let e = a * a + b * b;
+            assert!(
+                (e - 1.0).abs() < 0.02,
+                "pan energy at j={j} is {e}, expected ~1"
+            );
+        }
+    }
+
+    #[test]
+    fn pan_endpoints_steer_fully() {
+        // j = 0: all energy to channel 0; j = Ncoup-1: all to channel 1.
+        let (a0, b0) = coupling_pan_pair(0).unwrap();
+        assert_eq!(a0, 1.0);
+        assert!(b0.abs() < 0.02, "j=0 partner {b0} must be ~0");
+        let (a1, b1) = coupling_pan_pair(COUPLING_RECOVERED_LEN - 1).unwrap();
+        assert!(
+            a1.abs() < 0.02 && (b1 - 1.0).abs() < 1e-6,
+            "j=Ncoup-1 pair ({a1}, {b1}) must steer to channel 1"
+        );
+    }
+
+    #[test]
+    fn split_coupled_recovered_matches_the_generic_split() {
+        for &j in &[0u32, 1, 64, 255, 256, 300, 511] {
+            let (a, b) = split_coupled_recovered(2.0, j).unwrap();
+            let (ga, gb) =
+                crate::spectral::split_coupled_coefficient(2.0, j, coupling_coefficient_table())
+                    .unwrap();
+            assert_eq!((a, b), (ga, gb));
+            assert_eq!(a, 2.0 * coupling_coefficient(j).unwrap());
+        }
+    }
+
+    #[test]
+    fn coupling_index_out_of_range_is_rejected() {
+        assert_eq!(
+            coupling_coefficient(COUPLING_RECOVERED_LEN).unwrap_err(),
+            Error::CouplingIndexOutOfRange {
+                got: COUPLING_RECOVERED_LEN,
+                ncoup: COUPLING_RECOVERED_LEN
+            }
+        );
+        assert!(coupling_pan_pair(COUPLING_RECOVERED_LEN).is_err());
+        assert!(split_coupled_recovered(1.0, COUPLING_RECOVERED_LEN).is_err());
     }
 }

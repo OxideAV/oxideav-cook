@@ -292,6 +292,28 @@ pub fn decouple_stereo(
     Ok(StereoSpectra { ch0, ch1 })
 }
 
+/// [`decouple_stereo`] over the **recovered** §4.3 rotation table
+/// ([`crate::coupling::coupling_coefficient_table`], `Ncoup = 512`) —
+/// the coefficient values are no longer a caller-supplied GAP input.
+///
+/// # Errors
+///
+/// See [`decouple_stereo`].
+pub fn decouple_stereo_recovered(
+    coupled: &[f32],
+    geometry: &SubbandGeometry,
+    coupling_bands: core::ops::Range<u32>,
+    indices: &[u32],
+) -> Result<StereoSpectra, Error> {
+    decouple_stereo(
+        coupled,
+        geometry,
+        coupling_bands,
+        indices,
+        crate::coupling::coupling_coefficient_table(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,5 +607,28 @@ mod tests {
             decouple_stereo(&coupled, &geom, 20..21, &[0], &coef),
             Err(Error::BitAllocAxisOutOfRange { .. })
         ));
+    }
+
+    #[test]
+    fn decouple_recovered_applies_the_vendored_pan_pairs() {
+        // Two coupling bands, indices 0 (full channel-0 steer) and 256
+        // (the sine half's opening): every line of each band must carry
+        // that band's recovered pan pair, scaled by the coupled value.
+        let geom = SubbandGeometry::new(20).unwrap();
+        let coupled = vec![2.0f32; geom.total_coded_lines() as usize];
+        let indices = [0u32, 256];
+        let split = decouple_stereo_recovered(&coupled, &geom, 3..5, &indices).unwrap();
+        for (n, band) in (3u32..5).enumerate() {
+            let range = geom.line_range(band).unwrap();
+            let (a, b) = crate::coupling::coupling_pan_pair(indices[n]).unwrap();
+            for line in range.start as usize..range.end as usize {
+                assert_eq!(split.ch0[line], 2.0 * a, "band {band} line {line}");
+                assert_eq!(split.ch1[line], 2.0 * b, "band {band} line {line}");
+            }
+        }
+        // Lines outside the coupling range stay zero.
+        let outside = geom.line_range(0).unwrap();
+        assert_eq!(split.ch0[outside.start as usize], 0.0);
+        assert_eq!(split.ch1[outside.start as usize], 0.0);
     }
 }

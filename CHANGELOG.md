@@ -8,6 +8,17 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **§4.3 coupling decode over the recovered rotation table.**
+  `coupling::coupling_coefficient_table()` de-permutes the two recovered
+  buffers (256 unit-circle pairs + the bit-reversal index, builder
+  `cook.dll!0x40a0`) into the logical `coef[0..512]` the §4.2 mirror split
+  reads; `coupling_coefficient` / `coupling_pan_pair` /
+  `split_coupled_recovered` and `reconstruct::decouple_stereo_recovered`
+  apply it, so the §4.3 coefficient values are no longer a caller-supplied
+  GAP input. Tests pin the recovered structure numerically (cos-then-sin
+  ramp, full-steer endpoints, ≈unit pan energy across all 512 indices) and
+  the whole-band split against the vendored pairs.
+
 - **`spectral_decode` — the pinned §3 band decode (provenance/07 items
   1–3).** `codebook_for_category` wires the *"codebook = category"* identity;
   `BandCategory` types the category-7 empty-band sentinel (`0x46c0`
