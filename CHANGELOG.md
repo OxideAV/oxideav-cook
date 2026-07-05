@@ -8,6 +8,21 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`spectral_decode` — the pinned §3 band decode (provenance/07 items
+  1–3).** `codebook_for_category` wires the *"codebook = category"* identity;
+  `BandCategory` types the category-7 empty-band sentinel (`0x46c0`
+  early-out, emits zeros and reads nothing); `decode_vector` reads one VLC
+  codeword, peels the category's `dim_lo` magnitude digits, and reads **one
+  out-of-band sign bit per non-zero digit** (the item-3 resolution of the
+  duplicate-codeword "escape": sign multiplicity, no literal escape);
+  `decode_band` / `decode_band_coefficients` run whole bands to
+  reconstructed coefficients through the expectation rows. Tests pin the
+  identity map, the sentinel, sign-bit consumption (zero digits read no
+  bit), the closed-form reconstruction, over-coverage truncation, and the
+  observed `dim_lo × dim_hi = 20` identity of the two staged dimension
+  tables (a recorded docs nuance vs provenance/07's per-band-line-count
+  reading of `dim_hi`).
+
 - **`expectation` — the §3.1 level → signed-value reconstruction
   (provenance/07 item 2).** `expectation_magnitude(category, level)` is the
   typed `[level*4 + row_base]` read of the dequantiser `cook.dll!0x4600`'s
