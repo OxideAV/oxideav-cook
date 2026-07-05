@@ -313,6 +313,7 @@ pub mod bit_alloc;
 pub mod bitreader;
 pub mod category;
 pub mod codebook;
+pub mod codec;
 pub mod cookie;
 pub mod coupling;
 pub mod coupling_control;
@@ -360,6 +361,10 @@ pub use category::{
     CATEGORY_COUNT, GAIN_STEP_CENTRE_CATEGORY, MAX_CATEGORY_INDEX,
 };
 pub use codebook::{spectral_huffman, SpectralHuffman, CODEBOOK_COUNT};
+pub use codec::{
+    make_decoder, register, register_codecs, CookDecoder, CODEC_ID_STR, COOK_FOURCC,
+    MATROSKA_CODEC_ID,
+};
 pub use cookie::{CookCookie, SelectorFamily, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
 pub use coupling::{
     coupling_coefficient, coupling_coefficient_table, coupling_pan_pair, split_coupled_recovered,
@@ -457,6 +462,8 @@ pub use subband::{
 };
 pub use subpacket::SubPacketLayout;
 pub use synthesis::Synthesizer;
+
+oxideav_core::register!("cook", register);
 pub use transform::{
     rotation_group, rotation_group_rva, rotation_table_end_rva, TRANSFORM_ROTATION_GROUP_COUNT,
     TRANSFORM_ROTATION_GROUP_STRIDE, TRANSFORM_ROTATION_RVA,

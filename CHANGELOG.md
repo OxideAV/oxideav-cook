@@ -8,6 +8,18 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Framework registry wiring + dual-API `make_decoder`.** The new `codec`
+  module registers the Cook decoder into `oxideav_core`'s codec registry
+  (`register` / `register_codecs`, via `oxideav_core::register!("cook", …)`)
+  under the RealMedia `cook` fourcc and the Matroska `A_REAL/COOK` id, and
+  exposes the historical direct factory `make_decoder(params)` (the
+  workspace dual-API convention). `CookDecoder` parses/validates each packet
+  through the wired front end and surfaces the single remaining blocker —
+  the §2.2 category-assignment loop — as a typed
+  `oxideav_core::Error::Unsupported` on `receive_frame`, rather than emitting
+  fabricated audio. 7 tests cover the factory, registration, tag resolution,
+  and the honest-blocker behaviour.
+
 - **`frame_decode` + end-to-end entropy → spectrum → audible PCM.**
   `decode_spectrum` walks the §2.1 subband geometry and runs the pinned §3
   entropy read per band (codebook-by-category, magnitude+sign, expectation
