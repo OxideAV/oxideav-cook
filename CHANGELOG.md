@@ -8,6 +8,17 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`expectation` — the §3.1 level → signed-value reconstruction
+  (provenance/07 item 2).** `expectation_magnitude(category, level)` is the
+  typed `[level*4 + row_base]` read of the dequantiser `cook.dll!0x4600`'s
+  expectation branch over the `0x8fc8` table (stride-14 `[category][level]`
+  layout, empirically pinned from the staged values); `dequantise_level`
+  assembles the pinned closed form `value = sign × magnitude × band_gain`
+  with the `0xa148` sign convention (bit 0 → +1, bit 1 → −1). Levels beyond
+  the category's `level_count` clip bound raise the new typed
+  `Error::ExpectationLevelOutOfRange`. The `0x9150` scale-selector semantics
+  of the sibling codebook branch stay a recorded gap.
+
 - **Runtime N=1024 MDCT window/twiddles + §4.3 coupling tables vendored —
   the last two #158 runtime gaps closed on the data side.** The docs round-8
   `ud 0.3.0 --call` chain drove the vendor decoder's `RAOpenCodec` →

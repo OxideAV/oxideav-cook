@@ -318,6 +318,7 @@ pub mod coupling;
 pub mod coupling_control;
 pub mod descramble;
 pub mod driver;
+pub mod expectation;
 pub mod flavor;
 pub mod flavor_property;
 pub mod frame;
@@ -710,6 +711,18 @@ pub enum Error {
     /// mirror-index partner `Ncoup - 1 - j` has no entry to read
     /// (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §4.2).
     CouplingTableEmpty,
+    /// A quantised magnitude level exceeded its category's pinned clip
+    /// bound `level_count[category]`, so it has no reconstructed
+    /// magnitude in the `0x8fc8` category-expectation row
+    /// (`docs/audio/cook/provenance/07-cook-spectral-decode.md` item 2:
+    /// the encoder clips levels to `level_count`, `cook.dll!0x69f0`, so
+    /// a well-formed stream never carries a larger level).
+    ExpectationLevelOutOfRange {
+        /// The category whose expectation row was read.
+        category: u8,
+        /// The supplied level (`> level_count[category]`).
+        got: u32,
+    },
     /// A spectral-vector dimension of `0` was passed to the §3.1 symbol /
     /// coefficient grouping arithmetic
     /// (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §3.1: a
@@ -1093,6 +1106,12 @@ impl core::fmt::Display for Error {
             Error::CouplingTableEmpty => f.write_str(
                 "oxideav-cook: joint-stereo coupling table has length 0 \
                  (no mirror-index partner to read; spec/05 §4.2)",
+            ),
+            Error::ExpectationLevelOutOfRange { category, got } => write!(
+                f,
+                "oxideav-cook: quantised level {got} exceeds category \
+                 {category}'s level count (0x8fc8 expectation row; \
+                 provenance/07 item 2)"
             ),
             Error::SpectralVectorDimZero => f.write_str(
                 "oxideav-cook: spectral-vector dimension is 0 \
