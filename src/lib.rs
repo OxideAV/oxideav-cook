@@ -322,6 +322,7 @@ pub mod expectation;
 pub mod flavor;
 pub mod flavor_property;
 pub mod frame;
+pub mod frame_decode;
 pub mod gain;
 pub mod imlt;
 pub mod index_decomp;
@@ -360,6 +361,10 @@ pub use category::{
 };
 pub use codebook::{spectral_huffman, SpectralHuffman, CODEBOOK_COUNT};
 pub use cookie::{CookCookie, SelectorFamily, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
+pub use coupling::{
+    coupling_coefficient, coupling_coefficient_table, coupling_pan_pair, split_coupled_recovered,
+    COUPLING_RECOVERED_BITS, COUPLING_RECOVERED_LEN,
+};
 pub use coupling::{CouplingMode, StereoMode, STEREO_MODE_MAX, STEREO_MODE_MIN};
 pub use coupling_control::{
     read_coupling_index, read_coupling_mode, read_fixed_coupling_index, CouplingReadMode,
@@ -367,6 +372,9 @@ pub use coupling_control::{
 };
 pub use descramble::{descramble_packet, xor_descramble, xor_descramble_into, xor_key, CommonMode};
 pub use driver::{DecodeGate, Driver, PreparedCall};
+pub use expectation::{
+    dequantise_level, expectation_magnitude, CATEGORY_EXPECTATION_RVA, CATEGORY_EXPECTATION_STRIDE,
+};
 pub use flavor::{
     flavor_indices_matching_cookie, flavor_record, iter_flavor_records,
     iter_playable_flavor_records, FlavorRecord, FLAVOR_COUNT, RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED,
@@ -380,6 +388,7 @@ pub use frame::{
     decode_frame_body, frame_body_prefix, reconstruct_frame_spectrum, FrameSpectrum, FrameWalk,
     StereoCoupling,
 };
+pub use frame_decode::{decode_frame_spectrum, decode_spectrum, DecodedSpectrum, FrameCoupling};
 pub use gain::{
     apply_gain_blocks, apply_gain_envelope, expand_gain_envelope, gain_factor_for_index,
     read_segment_count, GainSegment, GAIN_POS_WINDOW, SEGMENT_COUNT_BIAS, SEGMENT_COUNT_FIELD_BITS,
@@ -392,8 +401,9 @@ pub use index_decomp::{
 };
 pub use init::{DecodeConfig, Descriptor, PCM_BYTES_PER_SAMPLE, RADECODE_FLAGS_DECODE};
 pub use mdct::{
-    mdct_full_window, mdct_half_window, window_builder_consts, window_builder_denominator,
-    window_builder_half_bias, window_builder_phase, window_builder_pi, MdctWindowLength,
+    long_full_window, long_full_window_unit, long_half_window, mdct_full_window, mdct_half_window,
+    window_builder_consts, window_builder_denominator, window_builder_half_bias,
+    window_builder_phase, window_builder_pi, MdctWindowLength, LONG_TRANSFORM_N,
     MDCT_WINDOW_BUILDER_CONSTS_RVA, MDCT_WINDOW_COUNT, MDCT_WINDOW_TABLE_END_RVA,
     MDCT_WINDOW_TABLE_RVA,
 };
@@ -414,7 +424,8 @@ pub use reciprocal::{
     RECIPROCAL_TRAILING_ZERO_INDEX,
 };
 pub use reconstruct::{
-    decouple_stereo, reconstruct_band, reconstruct_spectrum, BandReconstruction, StereoSpectra,
+    decouple_stereo, decouple_stereo_recovered, reconstruct_band, reconstruct_spectrum,
+    BandReconstruction, StereoSpectra,
 };
 pub use scale::{
     pow2_scale_for_exponent, sqrt2_scale_for_exponent, ScaleExponent,
@@ -432,7 +443,9 @@ pub use spectral::{
     SPECTRAL_CODEBOOK_VALUE_PTRS_RVA,
 };
 pub use spectral_decode::{
-    compose_symbol, decode_band_digits, decompose_symbol, natural_codebook_for,
+    codebook_for_category, compose_symbol, decode_band, decode_band_coefficients,
+    decode_band_digits, decode_vector, decompose_symbol, natural_codebook_for, BandCategory,
+    SignedLevel, EMPTY_BAND_CATEGORY,
 };
 pub use spi::{
     SpiExport, E_INVALIDARG, E_NOTIMPL, HR_UNRECOGNISED_SELECTOR, RASETFLAVOR_CONTEXT_OFFSET,

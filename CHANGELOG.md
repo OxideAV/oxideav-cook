@@ -8,6 +8,21 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`frame_decode` + end-to-end entropy → spectrum → audible PCM.**
+  `decode_spectrum` walks the §2.1 subband geometry and runs the pinned §3
+  entropy read per band (codebook-by-category, magnitude+sign, expectation
+  reconstruction) straight into each band's coefficient range;
+  `decode_frame_spectrum` routes mono/stereo through the recovered §4.3
+  coupling split. A new `tests/entropy_to_pcm.rs` drives a Cook-format
+  entropy bitstream all the way to 16-bit PCM through
+  `Synthesizer::with_recovered_long_window`, asserting real energy-bearing
+  output and exact silence for an all-empty frame. The **per-band category
+  assignment** (the bit-allocation loop `cook.dll!0x4800`, algorithm
+  unpinned), the gain-segment record VLC, and the §4.1 coupling-band
+  boundary derivation are the remaining bitstream GAPs, supplied as explicit
+  function inputs — so a real RA Cook packet is decodable end-to-end modulo
+  the category-assignment loop.
+
 - **Recovered N=1024 long-transform window wired into synthesis.**
   `mdct::long_full_window` mirror-completes the recovered 513-tap
   apodisation half-window about its peak (integer grid, `W[n] =
