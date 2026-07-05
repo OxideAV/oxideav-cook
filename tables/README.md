@@ -22,6 +22,29 @@ workspace).
 | `category-vector-dim-lo.csv` | 7  | u32 | `crate::tables::category_vector_dim_lo` |
 | `category-vector-dim-hi.csv` | 7  | u32 | `crate::tables::category_vector_dim_hi` |
 | `spectral-codebook-dims.csv` | 7  | u32 | `crate::tables::spectral_codebook_dims` |
+| `spectral-codebook-codes.csv` | 7 ragged rows | u32 | `crate::tables::spectral_codebook_codes` |
+| `spectral-codebook-code-lengths.csv` | 7 ragged rows | u32 | `crate::tables::spectral_codebook_code_lengths` |
+| `category-cost-lut.csv`     | 7   | u32 | `crate::tables::category_cost_lut` |
+| `transform-rotation-coeffs.csv` | 74 rows × 5 | f32 | `crate::tables::transform_rotation_coeffs` |
+| `mdct-window-builder-consts.csv` | 4 | f64 | `crate::tables::mdct_window_builder_consts` |
+| `mdct-window-1024.csv`      | 513 | f32 | `crate::tables::mdct_window_1024` |
+| `mdct-twiddle-cos-1024.csv` | 512 | f32 | `crate::tables::mdct_twiddle_cos_1024` |
+| `mdct-twiddle-sin-1024.csv` | 512 | f32 | `crate::tables::mdct_twiddle_sin_1024` |
+| `mdct-sine-1024.csv`        | 1024 | f32 | `crate::tables::mdct_sine_1024` |
+| `coupling-rotation-coeffs.csv` | 256 pairs | f32 | `crate::tables::coupling_rotation_coeffs` |
+| `coupling-index-permutation.csv` | 512 | u32 | `crate::tables::coupling_index_permutation` |
+| `quant-index-reciprocals.csv` | 7 | u32 | `crate::tables::quant_index_reciprocals` |
+| `spectral-dequant-scale.csv` | 8  | f32 | `crate::tables::spectral_dequant_scale` |
+| `sign-lut.csv`              | 2   | f32 | `crate::tables::sign_lut` |
+| `category-expectation.csv`  | 98 (0.0-delimited rows) | f32 | `crate::tables::category_expectation` |
+
+The `mdct-*-1024` and `coupling-*` tables are **runtime-recovered**
+facts: they are built by the vendor decoder's own `RAInitDecoder` into
+heap/BSS buffers (never present in the file image) and were dumped from
+the guest memory the vendor DLL populated in the univdreams sandbox
+(`docs/audio/cook/provenance/06-cook-univdreams-extraction.md`,
+`extract_runtime_dsp.py`) — data facts read from the decoder's memory
+image, not an algorithmic derivation.
 
 Tables are loaded at access time via `include_str!` and parsed on
 demand; numbers are never retyped into Rust source. Per-table loaders

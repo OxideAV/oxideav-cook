@@ -8,6 +8,30 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Runtime N=1024 MDCT window/twiddles + §4.3 coupling tables vendored —
+  the last two #158 runtime gaps closed on the data side.** The docs round-8
+  `ud 0.3.0 --call` chain drove the vendor decoder's `RAOpenCodec` →
+  `RAInitDecoder` with the real `FUN_RM_32.rm` cookie and transform-size
+  `+0x06 = 2` (N = 1024) and dumped the heap buffers the init built:
+  `tables/mdct-window-1024.csv` (513-tap apodisation half-window, peak
+  `1/√512`), `tables/mdct-twiddle-{cos,sin}-1024.csv` (512 unit-circle
+  rotation twiddles), `tables/mdct-sine-1024.csv` (1024-entry raw kernel
+  buffer), `tables/coupling-rotation-coeffs.csv` (256 unit-circle
+  `(cos θ, sin θ)` §4.3 pan pairs) and `tables/coupling-index-permutation.csv`
+  (512-entry bit-reversal index). Each loader asserts its `.meta` validation
+  note at parse time; tests additionally pin the hop-512 TDAC constancy of
+  the mirror-completed window and the 9-bit bit-reversal involution.
+- **Round-7 static dequant tables vendored** (`quant-index-reciprocals` =
+  `ceil(2^20/(level_count+1))` at `0x8fac`, `spectral-dequant-scale` at
+  `0x9150`, `sign-lut` at `0xa148`, and the 98-value `category-expectation`
+  region at `0x8fc8`), replacing spec-quoted constants as the source of
+  record; cross-check tests pin the previously arithmetic-recovered
+  `INDEX_RECIP` and spec-quoted `SIGN_LUT` / `DEQUANT_SCALE_NONZERO` against
+  the vendored bytes. The `category-expectation` loader reconstructs the flat
+  RVA order from the staging CSV's 0.0-delimited rows and asserts the
+  empirically-pinned stride-14 `[category][level]` layout (row `r`'s non-zero
+  run is exactly `level_count[r]` long and strictly increasing).
+
 - **§3.2 spectral codebooks recovered — docs-gap #1775 closed on the data
   side.** The docs Extractor round 6 dumped the runtime-built-in-BSS
   codebook code/length bytes by driving the vendor decoder's own

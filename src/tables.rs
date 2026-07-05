@@ -25,6 +25,15 @@
 //! | [`category_cost_lut`]      |   7 | per-category expected bit-cost `{52,47,43,37,29,22,16}` (§2.2) |
 //! | [`transform_rotation_coeffs`] | 74×5 | iMDCT pre/post rotation coefficients (RVA `0xa1b0`) |
 //! | [`mdct_window_builder_consts`] | 4 | f64 const inputs `{2.0,0.25,π,0.5}` to the runtime window builder |
+//! | [`mdct_window_1024`]       | 513 | runtime-recovered long-transform (N=1024) apodisation half-window |
+//! | [`mdct_twiddle_cos_1024`] / [`mdct_twiddle_sin_1024`] | 512 each | runtime-recovered N=1024 unit-circle rotation twiddles |
+//! | [`mdct_sine_1024`]         | 1024 | runtime-recovered sine / pre-rotation table (raw kernel buffer) |
+//! | [`coupling_rotation_coeffs`] | 256×2 | runtime-recovered §4.3 joint-stereo `(cos θ, sin θ)` pan pairs |
+//! | [`coupling_index_permutation`] | 512 | bit-reversal index into the coupling rotation table |
+//! | [`quant_index_reciprocals`] |  7 | Q20 `ceil(2^20/(level_count+1))` digit-split reciprocals (§2.2) |
+//! | [`spectral_dequant_scale`] |   8 | dequant magnitude-scale LUT (non-zero idx 5/6/7 = `2^-2.5/2^-2/2^-0.5`) |
+//! | [`sign_lut`]               |   2 | spectral sign LUT `{+1, -1}` |
+//! | [`category_expectation`]   |  98 | level → reconstructed-magnitude table (7 rows × stride 14) |
 //!
 //! Each loader caches its parse via [`std::sync::OnceLock`] so the CSV
 //! is split once per process. Lengths are advertised by the constants
@@ -52,6 +61,17 @@ const CATEGORY_COST_LUT_CSV: &str = include_str!("../tables/category-cost-lut.cs
 const TRANSFORM_ROTATION_COEFFS_CSV: &str = include_str!("../tables/transform-rotation-coeffs.csv");
 const MDCT_WINDOW_BUILDER_CONSTS_CSV: &str =
     include_str!("../tables/mdct-window-builder-consts.csv");
+const MDCT_WINDOW_1024_CSV: &str = include_str!("../tables/mdct-window-1024.csv");
+const MDCT_TWIDDLE_COS_1024_CSV: &str = include_str!("../tables/mdct-twiddle-cos-1024.csv");
+const MDCT_TWIDDLE_SIN_1024_CSV: &str = include_str!("../tables/mdct-twiddle-sin-1024.csv");
+const MDCT_SINE_1024_CSV: &str = include_str!("../tables/mdct-sine-1024.csv");
+const COUPLING_ROTATION_COEFFS_CSV: &str = include_str!("../tables/coupling-rotation-coeffs.csv");
+const COUPLING_INDEX_PERMUTATION_CSV: &str =
+    include_str!("../tables/coupling-index-permutation.csv");
+const QUANT_INDEX_RECIPROCALS_CSV: &str = include_str!("../tables/quant-index-reciprocals.csv");
+const SPECTRAL_DEQUANT_SCALE_CSV: &str = include_str!("../tables/spectral-dequant-scale.csv");
+const SIGN_LUT_CSV: &str = include_str!("../tables/sign-lut.csv");
+const CATEGORY_EXPECTATION_CSV: &str = include_str!("../tables/category-expectation.csv");
 
 // ---- advertised lengths (Feist facts from the `.meta` files) ------
 
@@ -118,6 +138,61 @@ pub const TRANSFORM_ROTATION_ROW_LEN: usize = 5;
 /// `mdct_window_builder_consts` length — 4 f64
 /// (`tables/mdct-window-builder-consts.meta`, RVA `0x8c20`).
 pub const MDCT_WINDOW_BUILDER_CONSTS_LEN: usize = 4;
+
+/// `mdct_window_1024` length — 513 f32 = `N/2 + 1` for the long
+/// transform `N = 1024` (`tables/mdct-window-1024.meta`, runtime heap
+/// buffer at decode-state `+0x16b08`, builder `cook.dll!0x3290`).
+pub const MDCT_WINDOW_1024_LEN: usize = 513;
+
+/// `mdct_twiddle_cos_1024` / `mdct_twiddle_sin_1024` length — 512 f32
+/// = `N/2` (`tables/mdct-twiddle-{cos,sin}-1024.meta`, state
+/// `+0x16b00` / `+0x16b04`).
+pub const MDCT_TWIDDLE_1024_LEN: usize = 512;
+
+/// `mdct_sine_1024` length — 1024 f32 = `N`
+/// (`tables/mdct-sine-1024.meta`, state `+0x16afc`).
+pub const MDCT_SINE_1024_LEN: usize = 1024;
+
+/// `coupling_rotation_coeffs` pair count — 256 `(cos, sin)` pairs
+/// (`tables/coupling-rotation-coeffs.meta`, state `+0x47b4`, builder
+/// `cook.dll!0x40a0`).
+pub const COUPLING_ROTATION_PAIR_COUNT: usize = 256;
+
+/// `coupling_index_permutation` length — 512 u32, matching the
+/// recovered coupling width `1 << 9 = 512`
+/// (`tables/coupling-index-permutation.meta`, state `+0x47b8`).
+pub const COUPLING_INDEX_PERMUTATION_LEN: usize = 512;
+
+/// `quant_index_reciprocals` length — 7 u32
+/// (`tables/quant-index-reciprocals.meta`, RVA `0x8fac`).
+pub const QUANT_INDEX_RECIPROCALS_LEN: usize = 7;
+
+/// `spectral_dequant_scale` length — 8 f32
+/// (`tables/spectral-dequant-scale.meta`, RVA `0x9150`).
+pub const SPECTRAL_DEQUANT_SCALE_LEN: usize = 8;
+
+/// `sign_lut` length — 2 f32 `{+1, -1}`
+/// (`tables/sign-lut.meta`, RVA `0xa148`).
+pub const SIGN_LUT_LEN: usize = 2;
+
+/// `category_expectation` flat length — 98 f32
+/// (`tables/category-expectation.meta`, RVA `0x8fc8`, region
+/// `0x8fc8..0x9150`).
+pub const CATEGORY_EXPECTATION_LEN: usize = 98;
+
+/// Row stride of the `category_expectation` table — 14 f32 per
+/// category row (= the largest per-category level range,
+/// `level_count[0] + 1 = 14`).
+///
+/// The `.meta` records the 2-D row/column layout as *"not statically
+/// unambiguous"*; the stride is pinned **empirically from the staged
+/// values themselves**: `98 = 7 × 14`, and under a 14-stride read each
+/// row `r` opens with `0.0`, carries exactly `level_count[r]`
+/// strictly-increasing non-zero magnitudes (run lengths
+/// `{13, 9, 6, 4, 3, 2, 1}` — precisely the seven per-category level
+/// counts), and is zero-padded to the stride. The loader asserts that
+/// full pattern, so a wrong stride cannot load silently.
+pub const CATEGORY_EXPECTATION_STRIDE: usize = 14;
 
 // ---- helpers -------------------------------------------------------
 
@@ -457,6 +532,326 @@ pub fn mdct_window_builder_consts() -> [f64; 4] {
             out.len()
         );
         [out[0], out[1], out[2], out[3]]
+    })
+}
+
+/// The runtime-built long-transform (`N = 1024`) MDCT apodisation
+/// half-window — 513 f32 (`tables/mdct-window-1024.csv`).
+///
+/// Built at `RAInitDecoder` by the window builder `cook.dll!0x3290`
+/// (x87 `fsin`/`fcos`/`fsqrt` over the `0x8c20` const inputs) into the
+/// heap buffer at decode-state `+0x16b08`; recovered by driving the
+/// vendor decoder's own init in the univdreams sandbox and dumping the
+/// buffer it built (`provenance/06`, ud 0.3.0 `--call` chain). Values
+/// are smooth, monotone non-increasing, peak `≈ 1/√512 = 0.04419` (the
+/// MDCT `1/√(N/2)` normalisation is folded in), tail → 0 — all
+/// asserted at load per the `.meta` validation note.
+pub fn mdct_window_1024() -> &'static [f32] {
+    static T: OnceLock<Vec<f32>> = OnceLock::new();
+    T.get_or_init(|| {
+        let t = parse_f32_table_one_per_line(MDCT_WINDOW_1024_CSV, MDCT_WINDOW_1024_LEN);
+        // .meta validation: "513 f32, monotone non-increasing, win[-1]=0".
+        for w in t.windows(2) {
+            assert!(
+                w[1] <= w[0],
+                "mdct-window-1024 must be monotone non-increasing"
+            );
+        }
+        assert!(
+            t[MDCT_WINDOW_1024_LEN - 1].abs() < 1e-12,
+            "mdct-window-1024 must end at 0"
+        );
+        // .meta purpose: peak ~0.0442 = 1/sqrt(512).
+        let peak = 1.0f32 / 512f32.sqrt();
+        assert!(
+            (t[0] - peak).abs() < 1e-6,
+            "mdct-window-1024 peak {} must be ~1/sqrt(512) = {peak}",
+            t[0]
+        );
+        t
+    })
+}
+
+/// The runtime-built `N = 1024` MDCT **cos** rotation twiddles — 512
+/// f32 (`tables/mdct-twiddle-cos-1024.csv`, state `+0x16b00`).
+///
+/// Unit-circle paired with [`mdct_twiddle_sin_1024`]; the loader
+/// asserts `cos² + sin² = 1` to the `.meta`'s `< 1e-4` bound over all
+/// 512 entries. Their consumption by the fast iMDCT kernel
+/// `cook.dll!0x5b70` stays the recorded no-closed-form GAP (audit #16).
+pub fn mdct_twiddle_cos_1024() -> &'static [f32] {
+    twiddles_1024().0
+}
+
+/// The runtime-built `N = 1024` MDCT **sin** rotation twiddles — 512
+/// f32 (`tables/mdct-twiddle-sin-1024.csv`, state `+0x16b04`). See
+/// [`mdct_twiddle_cos_1024`].
+pub fn mdct_twiddle_sin_1024() -> &'static [f32] {
+    twiddles_1024().1
+}
+
+fn twiddles_1024() -> (&'static [f32], &'static [f32]) {
+    static T: OnceLock<(Vec<f32>, Vec<f32>)> = OnceLock::new();
+    let (c, s) = T.get_or_init(|| {
+        let c = parse_f32_table_one_per_line(MDCT_TWIDDLE_COS_1024_CSV, MDCT_TWIDDLE_1024_LEN);
+        let s = parse_f32_table_one_per_line(MDCT_TWIDDLE_SIN_1024_CSV, MDCT_TWIDDLE_1024_LEN);
+        // .meta validation: cos^2 + sin^2 == 1 to < 1e-4 over all 512.
+        for (i, (&cc, &ss)) in c.iter().zip(s.iter()).enumerate() {
+            let e = (cc * cc + ss * ss - 1.0).abs();
+            assert!(e < 1e-4, "twiddle {i} off the unit circle by {e}");
+        }
+        (c, s)
+    });
+    (c.as_slice(), s.as_slice())
+}
+
+/// The runtime-built length-1024 sine / pre-rotation table — 1024 f32
+/// (`tables/mdct-sine-1024.csv`, state `+0x16afc`).
+///
+/// Consumed by the iMDCT kernel `cook.dll!0x5b70`; emitted as the raw
+/// runtime buffer (Feist facts). The loader asserts the `.meta` bound:
+/// 1024 finite f32 in `[-1, 1]`. The buffer's internal ordering follows
+/// the vendor kernel's access pattern, which stays the recorded
+/// no-closed-form GAP — no per-element law is asserted.
+pub fn mdct_sine_1024() -> &'static [f32] {
+    static T: OnceLock<Vec<f32>> = OnceLock::new();
+    T.get_or_init(|| {
+        let t = parse_f32_table_one_per_line(MDCT_SINE_1024_CSV, MDCT_SINE_1024_LEN);
+        for (i, v) in t.iter().enumerate() {
+            assert!(
+                v.is_finite() && (-1.0..=1.0).contains(v),
+                "mdct-sine-1024[{i}] = {v} outside [-1, 1]"
+            );
+        }
+        t
+    })
+}
+
+/// The runtime-built joint-stereo coupling rotation table — 256
+/// unit-circle `(cos θ, sin θ)` pairs
+/// (`tables/coupling-rotation-coeffs.csv`, state `+0x47b4`, builder
+/// `cook.dll!0x40a0`, addressed at decode via `0x8ee8[width]`).
+///
+/// This is the §4.3 mirror-index pan table of `spec/05` §4.2
+/// (`coef[j]` / `coef[Ncoup-1-j]`), recovered from the vendor
+/// decoder's own init (`provenance/06`). The loader asserts the
+/// `.meta` validation: every pair on the unit circle to `< 1e-4`.
+/// Pairs with [`coupling_index_permutation`], which maps a coupling
+/// index onto its slot in this table.
+pub fn coupling_rotation_coeffs() -> &'static [[f32; 2]] {
+    static T: OnceLock<Vec<[f32; 2]>> = OnceLock::new();
+    T.get_or_init(|| {
+        let mut out = Vec::with_capacity(COUPLING_ROTATION_PAIR_COUNT);
+        for line in COUPLING_ROTATION_COEFFS_CSV.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let mut it = line.split(',').map(|f| {
+                f.trim()
+                    .parse::<f32>()
+                    .unwrap_or_else(|_| panic!("non-f32 coupling element: {f:?}"))
+            });
+            let c = it.next().expect("coupling row has a cos column");
+            let s = it.next().expect("coupling row has a sin column");
+            assert!(it.next().is_none(), "coupling row must hold exactly 2 f32");
+            // .meta validation: each cos^2 + sin^2 == 1 to < 1e-4.
+            let e = (c * c + s * s - 1.0).abs();
+            assert!(e < 1e-4, "coupling pair off the unit circle by {e}");
+            out.push([c, s]);
+        }
+        assert_eq!(
+            out.len(),
+            COUPLING_ROTATION_PAIR_COUNT,
+            "coupling-rotation-coeffs.csv must hold {COUPLING_ROTATION_PAIR_COUNT} pairs"
+        );
+        out
+    })
+}
+
+/// The runtime-built coupling index permutation — 512 u32
+/// (`tables/coupling-index-permutation.csv`, state `+0x47b8`).
+///
+/// Maps a coupling index onto its rotation-**element** slot in the
+/// flattened [`coupling_rotation_coeffs`] buffer (256 pairs = 512
+/// f32). The `.meta` pins it as *"a permutation of 0..511 (bit-reversed
+/// order: 0, 256, 128, …)"*; the loader asserts the permutation
+/// property.
+pub fn coupling_index_permutation() -> &'static [u32] {
+    static T: OnceLock<Vec<u32>> = OnceLock::new();
+    T.get_or_init(|| {
+        let t = parse_u32_table_one_per_line(
+            COUPLING_INDEX_PERMUTATION_CSV,
+            COUPLING_INDEX_PERMUTATION_LEN,
+        );
+        // .meta validation: a permutation of 0..511.
+        let mut seen = [false; COUPLING_INDEX_PERMUTATION_LEN];
+        for &v in &t {
+            let v = v as usize;
+            assert!(
+                v < COUPLING_INDEX_PERMUTATION_LEN && !seen[v],
+                "coupling-index-permutation is not a permutation of 0..511"
+            );
+            seen[v] = true;
+        }
+        t
+    })
+}
+
+/// Per-category Q20 quantiser-index reciprocals — 7 u32
+/// (`tables/quant-index-reciprocals.csv`, RVA `0x8fac`,
+/// `spec/05 §2.2`).
+///
+/// `.meta`: each entry equals `ceil(2^20 / (level_count[cat] + 1))`
+/// exactly for the level counts `{13, 9, 6, 4, 3, 2, 1}` — the
+/// reciprocal-multiply constants the category walk `cook.dll!0x44a0`
+/// uses to split a VLC vector symbol into mixed-radix magnitude digits
+/// without a division. The loader asserts that closed form, and the
+/// unit tests cross-check the table against the arithmetic-recovered
+/// [`crate::index_decomp::INDEX_RECIP`] constants.
+pub fn quant_index_reciprocals() -> &'static [u32] {
+    static T: OnceLock<Vec<u32>> = OnceLock::new();
+    T.get_or_init(|| {
+        let t =
+            parse_u32_table_one_per_line(QUANT_INDEX_RECIPROCALS_CSV, QUANT_INDEX_RECIPROCALS_LEN);
+        for (cat, &recip) in t.iter().enumerate() {
+            let base = category_level_count()[cat] + 1;
+            let want = (1u32 << 20).div_ceil(base);
+            assert_eq!(
+                recip, want,
+                "quant-index-reciprocals[{cat}] must be ceil(2^20 / {base})"
+            );
+        }
+        t
+    })
+}
+
+/// The spectral dequant magnitude-scale LUT — 8 f32
+/// (`tables/spectral-dequant-scale.csv`, RVA `0x9150`).
+///
+/// Read at `[sel*4 + 0x9150]` in the spectral dequantiser
+/// `cook.dll!0x4600` and multiplied by the sign LUT and the per-band
+/// gain (`provenance/07` item 2). `.meta`: indices 0..4 are `0.0`;
+/// indices 5/6/7 are `{2^-2.5, 2^-2, 2^-0.5}` — asserted at load. The
+/// runtime scale-**selector** semantics stay a recorded gap.
+pub fn spectral_dequant_scale() -> &'static [f32] {
+    static T: OnceLock<Vec<f32>> = OnceLock::new();
+    T.get_or_init(|| {
+        let t =
+            parse_f32_table_one_per_line(SPECTRAL_DEQUANT_SCALE_CSV, SPECTRAL_DEQUANT_SCALE_LEN);
+        for (i, &v) in t.iter().enumerate() {
+            if i < 5 {
+                assert_eq!(v, 0.0, "spectral-dequant-scale[{i}] must be 0.0");
+            } else {
+                // 2^-2.5 / 2^-2 / 2^-0.5 for i = 5 / 6 / 7.
+                let k = match i {
+                    5 => -2.5f32,
+                    6 => -2.0,
+                    _ => -0.5,
+                };
+                // The vendor stores these as 6-decimal-digit rounded
+                // constants (0.176777 / 0.25 / 0.707107), so they match
+                // the .meta's 2^k identities to ~2e-6 relative, not
+                // f32-exactly.
+                let want = k.exp2();
+                assert!(
+                    ((v - want) / want).abs() < 1e-5,
+                    "spectral-dequant-scale[{i}] {v} must be 2^{k} to stored precision"
+                );
+            }
+        }
+        t
+    })
+}
+
+/// The spectral sign LUT — 2 f32 `{+1.0, -1.0}`
+/// (`tables/sign-lut.csv`, RVA `0xa148`).
+///
+/// One out-of-band sign bit per non-zero coefficient selects from this
+/// LUT (`provenance/07` items 2/3: bit `0` → `+1`, bit `1` → `-1`).
+/// Asserted at load; the unit tests cross-check it against the
+/// spec-quoted [`crate::spectral::SIGN_LUT`] constant.
+pub fn sign_lut() -> &'static [f32] {
+    static T: OnceLock<Vec<f32>> = OnceLock::new();
+    T.get_or_init(|| {
+        let t = parse_f32_table_one_per_line(SIGN_LUT_CSV, SIGN_LUT_LEN);
+        assert_eq!(t[0], 1.0, "sign-lut[0] must be +1.0");
+        assert_eq!(t[1], -1.0, "sign-lut[1] must be -1.0");
+        t
+    })
+}
+
+/// The category-expectation magnitude table — flat 98 f32
+/// (`tables/category-expectation.csv`, RVA `0x8fc8`, region
+/// `0x8fc8..0x9150`).
+///
+/// Read at `[level*4 + row_base]` in the spectral dequantiser
+/// `cook.dll!0x4600`'s expectation branch to map a quantised level to a
+/// reconstructed magnitude (`provenance/07` item 2). Returned in flat
+/// RVA order; the typed 2-D `[category][level]` accessor is
+/// [`crate::expectation::expectation_magnitude`] (stride
+/// [`CATEGORY_EXPECTATION_STRIDE`], empirically pinned — see that
+/// constant's docs).
+///
+/// The staging CSV stores the region as `0.0`-delimited rows: the
+/// extractor closes a row at each `0.0` that follows at least one
+/// value, **dropping that delimiter zero**. The loader reconstructs
+/// the flat 98-value sequence by re-inserting one `0.0` between
+/// consecutive rows, then asserts the `.meta` bound (98 finite f32 in
+/// `[0, 8)`) and the full stride-14 zero/run pattern described at
+/// [`CATEGORY_EXPECTATION_STRIDE`].
+pub fn category_expectation() -> &'static [f32] {
+    static T: OnceLock<Vec<f32>> = OnceLock::new();
+    T.get_or_init(|| {
+        let mut flat: Vec<f32> = Vec::with_capacity(CATEGORY_EXPECTATION_LEN);
+        for line in CATEGORY_EXPECTATION_CSV.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if !flat.is_empty() {
+                // Re-insert the delimiter zero the extractor dropped
+                // between rows.
+                flat.push(0.0);
+            }
+            for f in line.split(',') {
+                flat.push(
+                    f.trim()
+                        .parse::<f32>()
+                        .unwrap_or_else(|_| panic!("non-f32 expectation element: {f:?}")),
+                );
+            }
+        }
+        assert_eq!(
+            flat.len(),
+            CATEGORY_EXPECTATION_LEN,
+            "category-expectation must reconstruct to {CATEGORY_EXPECTATION_LEN} values"
+        );
+        // .meta validation: 98 finite f32 in [0, 8).
+        for (i, v) in flat.iter().enumerate() {
+            assert!(
+                v.is_finite() && (0.0..8.0).contains(v),
+                "category-expectation[{i}] = {v} outside [0, 8)"
+            );
+        }
+        // Empirical stride pin (see CATEGORY_EXPECTATION_STRIDE): row r
+        // = [0.0, m_1 < m_2 < … < m_lc, 0.0 pad…] with lc =
+        // level_count[r].
+        let lc = category_level_count();
+        for (r, row) in flat.chunks(CATEGORY_EXPECTATION_STRIDE).enumerate() {
+            let run = lc[r] as usize;
+            assert_eq!(row[0], 0.0, "expectation row {r} must open with 0.0");
+            for i in 1..=run {
+                assert!(
+                    row[i] > 0.0 && (i == 1 || row[i] > row[i - 1]),
+                    "expectation row {r} must carry {run} increasing magnitudes"
+                );
+            }
+            for (i, &v) in row.iter().enumerate().skip(run + 1) {
+                assert_eq!(v, 0.0, "expectation row {r} element {i} must be 0.0 pad");
+            }
+        }
+        flat
     })
 }
 
@@ -829,5 +1224,125 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ----- runtime-recovered N=1024 DSP tables (round 8 staging) ----
+
+    #[test]
+    fn runtime_dsp_lengths_match_advertised() {
+        assert_eq!(mdct_window_1024().len(), MDCT_WINDOW_1024_LEN);
+        assert_eq!(mdct_twiddle_cos_1024().len(), MDCT_TWIDDLE_1024_LEN);
+        assert_eq!(mdct_twiddle_sin_1024().len(), MDCT_TWIDDLE_1024_LEN);
+        assert_eq!(mdct_sine_1024().len(), MDCT_SINE_1024_LEN);
+        assert_eq!(
+            coupling_rotation_coeffs().len(),
+            COUPLING_ROTATION_PAIR_COUNT
+        );
+        assert_eq!(
+            coupling_index_permutation().len(),
+            COUPLING_INDEX_PERMUTATION_LEN
+        );
+        assert_eq!(quant_index_reciprocals().len(), QUANT_INDEX_RECIPROCALS_LEN);
+        assert_eq!(spectral_dequant_scale().len(), SPECTRAL_DEQUANT_SCALE_LEN);
+        assert_eq!(sign_lut().len(), SIGN_LUT_LEN);
+        assert_eq!(category_expectation().len(), CATEGORY_EXPECTATION_LEN);
+    }
+
+    #[test]
+    fn long_window_hop_tdac_is_constant() {
+        // The half-window mirror-completes into a 1024-tap window whose
+        // hop-512 TDAC sum W[n]² + W[n+512]² is the constant 1/512 (the
+        // folded MDCT normalisation): half[k]² + half[512-k]² = 1/512.
+        let w = mdct_window_1024();
+        let want = 1.0f64 / 512.0;
+        for k in 0..=512usize {
+            let a = w[k] as f64;
+            let b = w[512 - k] as f64;
+            let e = ((a * a + b * b) - want).abs() / want;
+            assert!(e < 1e-5, "TDAC sum at k={k} off by rel {e}");
+        }
+    }
+
+    #[test]
+    fn coupling_permutation_is_a_bit_reversal_involution() {
+        let p = coupling_index_permutation();
+        // .meta: bit-reversed order 0, 256, 128, … — a 9-bit
+        // bit-reversal, which is its own inverse.
+        for (j, &s) in p.iter().enumerate() {
+            let mut r = 0u32;
+            let mut x = j as u32;
+            for _ in 0..9 {
+                r = (r << 1) | (x & 1);
+                x >>= 1;
+            }
+            assert_eq!(s, r, "perm[{j}] must be the 9-bit reversal of {j}");
+            assert_eq!(
+                p[s as usize] as usize, j,
+                "perm must be an involution at {j}"
+            );
+        }
+        assert_eq!(&p[..3], &[0, 256, 128], ".meta leading order 0, 256, 128");
+    }
+
+    #[test]
+    fn coupling_pairs_start_with_meta_anchors() {
+        // .meta validation: first pairs (1,0), (0,1), (1/√2, 1/√2).
+        let t = coupling_rotation_coeffs();
+        assert_eq!(t[0][0], 1.0);
+        assert!(t[0][1].abs() < 1e-9);
+        assert!(t[1][0].abs() < 1e-9);
+        assert_eq!(t[1][1], 1.0);
+        let r = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((t[2][0] - r).abs() < 1e-6 && (t[2][1] - r).abs() < 1e-6);
+    }
+
+    #[test]
+    fn quant_index_reciprocals_match_arithmetic_constants() {
+        // Cross-check the vendored 0x8fac bytes against the constants
+        // index_decomp recovered by arithmetic before the table was
+        // staged — they must agree exactly.
+        assert_eq!(
+            quant_index_reciprocals(),
+            &crate::index_decomp::INDEX_RECIP[..]
+        );
+    }
+
+    #[test]
+    fn sign_lut_matches_spec_quoted_constant() {
+        assert_eq!(sign_lut(), &crate::spectral::SIGN_LUT[..]);
+    }
+
+    #[test]
+    fn dequant_scale_nonzero_matches_spec_quoted_triple() {
+        // spec/05 §3.1 quotes the non-zero triple to 5 printed digits;
+        // the vendored bytes must agree to that precision.
+        let t = spectral_dequant_scale();
+        for (i, &q) in crate::spectral::DEQUANT_SCALE_NONZERO.iter().enumerate() {
+            assert!(
+                (t[5 + i] - q).abs() < 1e-5,
+                "dequant scale idx {} = {} vs spec-quoted {q}",
+                5 + i,
+                t[5 + i]
+            );
+        }
+    }
+
+    #[test]
+    fn category_expectation_rows_track_level_counts() {
+        // Row r's non-zero run is exactly level_count[r] long — the
+        // empirical basis for the stride-14 [category][level] layout.
+        let flat = category_expectation();
+        let lc = category_level_count();
+        for (r, row) in flat.chunks(CATEGORY_EXPECTATION_STRIDE).enumerate() {
+            let nonzero = row.iter().filter(|&&v| v != 0.0).count();
+            assert_eq!(
+                nonzero, lc[r] as usize,
+                "expectation row {r} non-zero run must equal level_count"
+            );
+        }
+        // .meta quotes the first row as "0, 0.392, 0.761, …, 4.724".
+        assert!((flat[1] - 0.392).abs() < 1e-4);
+        assert!((flat[2] - 0.761).abs() < 1e-4);
+        assert!((flat[13] - 4.724).abs() < 1e-4);
     }
 }
