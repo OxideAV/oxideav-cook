@@ -99,6 +99,23 @@ impl Synthesizer {
             .expect("vendored full windows are non-empty and even-length")
     }
 
+    /// Build the engine over the **recovered long-transform window**
+    /// ([`mdct::long_full_window_unit`], the runtime-recovered N=1024
+    /// apodisation mirror-completed and rescaled to this engine's unit
+    /// TDAC convention) — hop 512.
+    ///
+    /// This replaces the former frame-length-window GAP input for the
+    /// long transform: the taps are the vendor decoder's own values
+    /// (heap-recovered at `RAInitDecoder`, `provenance/06`), not a
+    /// fabricated window. How the per-frame spectrum is arranged across
+    /// hop-512 blocks by the vendor's fast kernel (`cook.dll!0x5b70`)
+    /// stays tied to the recorded kernel GAP; the engine itself is
+    /// block-cadence-agnostic.
+    pub fn with_recovered_long_window() -> Self {
+        Self::with_window(mdct::long_full_window_unit())
+            .expect("recovered long window is non-empty and even-length")
+    }
+
     /// Spectral lines consumed / samples emitted per pushed frame.
     pub fn hop(&self) -> usize {
         self.window.len() / 2
@@ -334,6 +351,45 @@ mod tests {
                     out[i]
                 );
             }
+        }
+    }
+
+    #[test]
+    fn streaming_reconstruction_with_the_recovered_long_window() {
+        // The recovered N=1024 window (unit-TDAC form) drives the
+        // engine at hop 512 and reconstructs a random source through
+        // the full analysis → synthesis chain. The recovered taps sit
+        // on an integer grid (mirror about tap 512, not 511.5 — see
+        // mdct::long_full_window), so alias cancellation carries a
+        // half-sample residual of ~2e-3 relative; the tolerance covers
+        // it and the reconstruction is otherwise exact.
+        let mut s = Synthesizer::with_recovered_long_window();
+        let hop = s.hop();
+        assert_eq!(hop, 512);
+        let w = s.window().to_vec();
+        let frames = 4usize;
+        let mut seed = 0x1024_5121u32;
+        let signal: Vec<f32> = (0..hop * (frames + 2)).map(|_| prng(&mut seed)).collect();
+        for f in 0..frames {
+            let chunk: Vec<f32> = signal[f * hop..f * hop + 2 * hop]
+                .iter()
+                .zip(w.iter())
+                .map(|(&x, &wk)| x * wk)
+                .collect();
+            let spectrum = mlt_direct(&chunk).unwrap();
+            let out = s.push_spectrum(&spectrum).unwrap();
+            if f == 0 {
+                continue; // warm-up block.
+            }
+            let mut max_err = 0.0f32;
+            for i in 0..hop {
+                let want = signal[f * hop + i];
+                max_err = max_err.max((out[i] - want).abs());
+            }
+            assert!(
+                max_err < 8e-3,
+                "recovered-window PR: frame {f} max err {max_err}"
+            );
         }
     }
 

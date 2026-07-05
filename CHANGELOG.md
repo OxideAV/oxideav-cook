@@ -8,6 +8,19 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Recovered N=1024 long-transform window wired into synthesis.**
+  `mdct::long_full_window` mirror-completes the recovered 513-tap
+  apodisation half-window about its peak (integer grid, `W[n] =
+  half[|n-512|]`); `mdct::long_full_window_unit` rescales it by √512 to the
+  unit-TDAC convention the `Synthesizer` consumes (the vendor folds a
+  `1/√512` MDCT normalisation into its window; this crate's `imlt` carries
+  the normalisation inside the transform instead).
+  `Synthesizer::with_recovered_long_window` builds the hop-512 engine over
+  it — the former frame-length-window GAP input is now the vendor's own
+  recovered taps. Tests pin the mirror completion, the unit hop-512 TDAC
+  identity, and end-to-end perfect reconstruction of a random source at hop
+  512.
+
 - **§4.3 coupling decode over the recovered rotation table.**
   `coupling::coupling_coefficient_table()` de-permutes the two recovered
   buffers (256 unit-circle pairs + the bit-reversal index, builder
