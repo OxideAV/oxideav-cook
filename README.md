@@ -25,6 +25,30 @@ numeric facts tables + real-stream validation).
 
 ## What works
 
+- **§2.2 category-assignment / bit-allocation loop (`cook.dll!0x4800`,
+  the last routing GAP)** — Cook does not transmit per-band spectral
+  categories; they are **computed** in-decoder from a per-band value
+  array `v[]` and the frame bit budget.
+  [`category_assignment`](src/category_assignment.rs) is that loop, from
+  `docs/audio/cook/provenance/08-cook-category-assignment.md` +
+  `tables/category-assignment-params.csv`. The **base pass**
+  `cat[b] = clip((32 + off − v[b]) >> 1, 0, 7)` picks the global offset
+  so the total `0x8f38`-cost-LUT best matches the budget; the exact
+  landing is the documented `K = 32` under a strict slack (`refine one
+  category finer while total_cost + K < budget`), which reproduces the
+  reference decoder's own `cook.dll!0x4800` output across a fine budget
+  sweep and flat / non-flat / `Nb`-varied inputs (every test expectation
+  is the validator's output, captured by driving the opaque validator
+  binary — no decoder source read). The **Stage-2 ±1 refinement** is
+  wired for the validated uniform-under-budget regime (`refine_uniform`);
+  the non-flat priority interleave and over-budget reclaim order that
+  `provenance/08` records as only partially characterised are left
+  unrefined, not fabricated. [`decode_spectrum_assigned`](src/frame_decode.rs)
+  computes the per-band [`BandCategory`] list from `(values, budget,
+  refinement_bound)` and runs it straight through the codebook-by-category
+  §3 band decode — the bridge between the quantiser indices and the
+  spectral entropy read.
+
 - **§3.2 spectral codebooks + the §3.1 VLC walk (docs-gap #1775 data
   recovered)** — the docs Extractor round 6 dumped the runtime-built-in-BSS
   spectral codebook code/length bytes by driving the vendor decoder's own

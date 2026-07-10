@@ -20,21 +20,26 @@
 //! splits it by the recovered §4.3 mirror rotation
 //! ([`crate::reconstruct::decouple_stereo_recovered`]).
 //!
-//! ## The single remaining bitstream GAP
+//! ## The category-assignment routing piece (now wired)
 //!
 //! The **per-band category assignment** — which category (0..6, or the
 //! empty-band 7) the in-decoder bit-allocation loop `cook.dll!0x4800`
-//! assigns to each subband — is a recorded DOCS-GAP: `spec/05` §2.2 and
-//! `provenance/07` item 1 pin the loop's cost LUT (`0x8f38`) and its
-//! `0x10`/`0x20` refinement-round bounds, but **not** the refinement
-//! algorithm itself (initial categories, budget computation, up/down
-//! order). Categories are **not transmitted** in the bitstream — they
-//! are computed — so without that algorithm the per-band codebook a
-//! real frame uses cannot be derived. This module therefore takes the
-//! per-band [`crate::spectral_decode::BandCategory`] list as a **caller
-//! input**: everything downstream of the assignment (the entropy read,
-//! the reconstruction, the coupling split, the synthesis) is wired
-//! bit-exactly; the assignment loop is the one stage still stubbed.
+//! assigns to each subband — was the single remaining routing GAP:
+//! `spec/05` §2.2 and `provenance/07` item 1 pinned the loop's cost LUT
+//! (`0x8f38`) and its round bounds, but not the assignment itself.
+//! `provenance/08` (`§2.2`) recovers it: categories are **not
+//! transmitted** — they are **computed** from a per-band value array and
+//! a bit budget by the base pass `cat[b] = clip((32 + off − v[b]) >> 1,
+//! 0, 7)` (offset chosen to best-match the budget) plus a Stage-2 ±1
+//! refinement. That loop is [`crate::category_assignment`]; this module
+//! consumes it. [`decode_spectrum`] still takes an explicit
+//! [`BandCategory`] list (so the exact wire values remain a caller input
+//! where a real frame's `v[]`/budget are not captured), and
+//! [`decode_spectrum_assigned`] computes that list from `(v[], budget,
+//! refinement_bound)` through the recovered §2.2 pass and decodes in one
+//! call. Everything downstream of the assignment (the entropy read, the
+//! reconstruction, the coupling split, the synthesis) is wired
+//! bit-exactly.
 //!
 //! The gain-envelope **per-segment records** (§1.2, VLC-gated by an
 //! unpinned codebook) and the §4.1 **coupling-band boundary** derivation
@@ -50,6 +55,7 @@
 
 use crate::{
     bitreader::FrameBitReader,
+    category_assignment::assign_band_categories,
     reconstruct::{decouple_stereo_recovered, StereoSpectra},
     spectral_decode::{decode_band_coefficients, BandCategory},
     subband::SubbandGeometry,
@@ -112,6 +118,46 @@ pub fn decode_spectrum(
         spectrum[range.start as usize..range.end as usize].copy_from_slice(&coeffs);
     }
     Ok(spectrum)
+}
+
+/// Decode one channel's spectral entropy section, **computing** the
+/// per-band category assignment from the §2.2 bit-allocation pass rather
+/// than taking it as a caller input.
+///
+/// `values` is the per-band value array `v[]` (one per subband — the
+/// band priority / envelope index the §2 quant walk yields); `budget` is
+/// the frame bit budget and `refinement_bound` is the Stage-2 pass bound
+/// (`M`, decode-state `+0x28`). The recovered §2.2 pass
+/// ([`assign_band_categories`]) turns `(values, budget, refinement_bound)`
+/// into the per-band [`BandCategory`] list, which then routes through the
+/// same codebook-by-category §3 decode as [`decode_spectrum`].
+///
+/// This is the routing bridge between the quantiser indices and the
+/// spectral entropy read; see the module docs for the exact algorithm and
+/// its validated regime.
+///
+/// # Errors
+///
+/// - [`Error::SpectrumBandCountMismatch`] when `values.len()` is not the
+///   subband count.
+/// - any error [`decode_spectrum`] raises.
+pub fn decode_spectrum_assigned(
+    reader: &mut FrameBitReader,
+    geometry: &SubbandGeometry,
+    values: &[i32],
+    budget: i32,
+    refinement_bound: u32,
+    band_gains: &[f32],
+) -> Result<Vec<f32>, Error> {
+    let subband_count = geometry.subband_count();
+    if values.len() as u32 != subband_count {
+        return Err(Error::SpectrumBandCountMismatch {
+            subband_count,
+            got: values.len(),
+        });
+    }
+    let categories = assign_band_categories(values, budget, refinement_bound)?;
+    decode_spectrum(reader, geometry, &categories, band_gains)
 }
 
 /// The coupling inputs [`decode_frame_spectrum`] consumes for a stereo
@@ -342,6 +388,77 @@ mod tests {
         assert_eq!(
             decode_frame_spectrum(&mut reader, &geom, &cats, &[1.0], 2, None).unwrap_err(),
             Error::StereoCouplingMissing
+        );
+    }
+
+    #[test]
+    fn assigned_decode_computes_the_category_list() {
+        use crate::category_assignment::assign_base_categories;
+        // A tiny-budget frame: the §2.2 base pass assigns the empty band
+        // to every subband, so the assigned decode reads nothing and is
+        // silent — end-to-end through the recovered assignment loop.
+        let geom = SubbandGeometry::new(8).unwrap();
+        let values = vec![0i32; 8];
+        // budget <= K (32) -> all category 7 (empty).
+        assert!(assign_base_categories(&values, 20).iter().all(|&c| c == 7));
+        let bytes = [0xffu8; 16];
+        let mut reader = FrameBitReader::new(&bytes);
+        let spectrum =
+            decode_spectrum_assigned(&mut reader, &geom, &values, 20, 1, &[1.0]).unwrap();
+        assert!(spectrum.iter().all(|&v| v == 0.0));
+        assert_eq!(reader.bit_cursor(), 0, "all-empty assignment reads nothing");
+    }
+
+    #[test]
+    fn assigned_decode_matches_explicit_categories() {
+        use crate::category_assignment::assign_band_categories;
+        // Choose (v, budget) that assign a coded mix, encode a bitstream
+        // matching that computed category list, and confirm the assigned
+        // path equals the explicit-category path bit for bit.
+        let geom = SubbandGeometry::new(8).unwrap();
+        let values = vec![0i32; 8];
+        let budget = 500; // base pass -> all category 0 (finest, cost 52).
+        let cats = assign_band_categories(&values, budget, 1).unwrap();
+        assert!(cats.iter().all(|c| matches!(c, BandCategory::Coded(_))));
+
+        // Encode one cb0-vector per band matching the computed categories.
+        let mut fields = Vec::new();
+        for (band, c) in cats.iter().enumerate() {
+            if let BandCategory::Coded(ci) = c {
+                let cb = codebook_for_category(*ci);
+                let huffman = spectral_huffman(cb);
+                let dim = crate::spectral::category_vector_dims(*ci).lo;
+                // A single non-zero leading digit + zeros, one sign bit.
+                let mut digits = vec![0u32; dim as usize];
+                digits[0] = 1 + (band as u32 & 1);
+                let symbol = compose_symbol(&digits, *ci).unwrap();
+                fields.push(huffman.codeword(symbol).unwrap());
+                fields.push((band as u32 & 1, 1)); // sign for the non-zero digit
+            }
+        }
+        let bytes = pack(&fields);
+
+        let mut reader_a = FrameBitReader::new(&bytes);
+        let via_assigned =
+            decode_spectrum_assigned(&mut reader_a, &geom, &values, budget, 1, &[2.0]).unwrap();
+        let mut reader_b = FrameBitReader::new(&bytes);
+        let via_explicit = decode_spectrum(&mut reader_b, &geom, &cats, &[2.0]).unwrap();
+        assert_eq!(via_assigned, via_explicit);
+        assert_eq!(reader_a.bit_cursor(), reader_b.bit_cursor());
+        assert!(via_assigned.iter().any(|&v| v != 0.0), "coded energy");
+    }
+
+    #[test]
+    fn assigned_decode_rejects_wrong_value_count() {
+        let geom = SubbandGeometry::new(8).unwrap();
+        let bytes = [0u8; 8];
+        let mut reader = FrameBitReader::new(&bytes);
+        assert_eq!(
+            decode_spectrum_assigned(&mut reader, &geom, &[0i32; 7], 100, 1, &[1.0]).unwrap_err(),
+            Error::SpectrumBandCountMismatch {
+                subband_count: 8,
+                got: 7
+            }
         );
     }
 

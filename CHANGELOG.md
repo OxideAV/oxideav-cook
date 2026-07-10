@@ -8,6 +8,28 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **§2.2 category-assignment / bit-allocation loop recovered and wired
+  (`cook.dll!0x4800`).** The new `category_assignment` module implements
+  the routing piece that turns the per-band value array `v[]` and the
+  frame bit budget into the per-band spectral category — categories are
+  computed in-decoder, never transmitted. The **base pass** is the
+  `provenance/08` formula `cat[b] = clip((32 + off − v[b]) >> 1, 0, 7)`
+  with the global offset chosen so the total `0x8f38`-LUT cost best
+  matches the budget; the exact landing rule is pinned to the documented
+  `K = 32` (refine one category finer while `total_cost + K < budget`),
+  cross-checked against the reference decoder's own `cook.dll!0x4800`
+  output across a fine budget sweep and flat / non-flat / `Nb`-varied
+  inputs (every unit-test expectation is the validator's output). The
+  **Stage-2 ±1 refinement** is implemented for the validated
+  uniform-under-budget regime (`refine_uniform`: upgrade the lowest-index
+  bands one category finer, `M − 1` total, most-recent-first index list);
+  the non-flat priority interleave and over-budget reclaim order that
+  `provenance/08` records as only partially characterised are left
+  unrefined rather than fabricated. `frame_decode::decode_spectrum_assigned`
+  computes the category list from `(values, budget, refinement_bound)` and
+  decodes in one call, closing the last routing GAP between the quantiser
+  indices and the codebook-by-category §3 band decode. 12 + 3 tests.
+
 - **Framework registry wiring + dual-API `make_decoder`.** The new `codec`
   module registers the Cook decoder into `oxideav_core`'s codec registry
   (`register` / `register_codecs`, via `oxideav_core::register!("cook", …)`)

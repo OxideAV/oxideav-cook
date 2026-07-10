@@ -312,6 +312,7 @@ pub mod backend;
 pub mod bit_alloc;
 pub mod bitreader;
 pub mod category;
+pub mod category_assignment;
 pub mod codebook;
 pub mod codec;
 pub mod cookie;
@@ -360,6 +361,11 @@ pub use category::{
     category_parameters, gain_step_via_scale_ladder, CategoryIndex, CategoryParameters,
     CATEGORY_COUNT, GAIN_STEP_CENTRE_CATEGORY, MAX_CATEGORY_INDEX,
 };
+pub use category_assignment::{
+    assign_band_categories, assign_base_categories, assign_base_offset, assign_categories,
+    base_category, category_cost, refine_uniform, CategoryAssignment, BASE_CONSTANT_K,
+    BISECTION_STEPS, CATEGORY_CLIP_HI, CATEGORY_CLIP_LO, OFFSET_START,
+};
 pub use codebook::{spectral_huffman, SpectralHuffman, CODEBOOK_COUNT};
 pub use codec::{
     make_decoder, register, register_codecs, CookDecoder, CODEC_ID_STR, COOK_FOURCC,
@@ -393,7 +399,10 @@ pub use frame::{
     decode_frame_body, frame_body_prefix, reconstruct_frame_spectrum, FrameSpectrum, FrameWalk,
     StereoCoupling,
 };
-pub use frame_decode::{decode_frame_spectrum, decode_spectrum, DecodedSpectrum, FrameCoupling};
+pub use frame_decode::{
+    decode_frame_spectrum, decode_spectrum, decode_spectrum_assigned, DecodedSpectrum,
+    FrameCoupling,
+};
 pub use gain::{
     apply_gain_blocks, apply_gain_envelope, expand_gain_envelope, gain_factor_for_index,
     read_segment_count, GainSegment, GAIN_POS_WINDOW, SEGMENT_COUNT_BIAS, SEGMENT_COUNT_FIELD_BITS,

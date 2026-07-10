@@ -9,19 +9,26 @@
 //!
 //! ## Decode status
 //!
-//! The Cook decode pipeline is assembled end-to-end **except** the §2.2
-//! per-band **category-assignment loop** (`cook.dll!0x4800`, algorithm a
-//! recorded DOCS-GAP — see [`crate::frame_decode`]). Because the per-band
-//! categories are *computed in the decoder*, not carried on the wire, a
-//! real packet cannot be decoded to correct PCM until that loop is
-//! pinned. [`CookDecoder`] therefore parses and structurally validates
-//! each packet (the pinned §0–§2.1 frame-body prefix over the real
-//! bitstream) and surfaces the precise remaining blocker as a typed
+//! The Cook decode pipeline is assembled end-to-end — including the §2.2
+//! per-band **category-assignment loop** (`cook.dll!0x4800`), now
+//! recovered and wired as [`crate::category_assignment`] /
+//! [`crate::frame_decode::decode_spectrum_assigned`]. What blocks a
+//! **real** packet's decode to PCM is no longer the algorithm but the
+//! per-frame **inputs** to it: the assignment consumes a per-band value
+//! array `v[]`, a bit budget, and a refinement bound `M` that
+//! `provenance/08` records as **stack-resident and not captured** by the
+//! instrumented decode (the same reason a real frame's categories could
+//! not be read out), together with the still-unpinned §1.2 gain-segment
+//! record VLC and the §4.1 coupling-band boundary derivation.
+//! [`CookDecoder`] therefore parses and structurally validates each
+//! packet (the pinned §0–§2.1 frame-body prefix over the real bitstream)
+//! and surfaces the precise remaining blocker as a typed
 //! [`oxideav_core::Error::Unsupported`] on [`Decoder::receive_frame`],
-//! rather than emitting fabricated audio. Every other stage — the
-//! entropy read, the expectation reconstruction, the recovered §4.3
-//! coupling split, and the recovered-window §5 synthesis — is wired and
-//! exercised by [`crate::frame_decode`] and `tests/entropy_to_pcm.rs`.
+//! rather than emitting fabricated audio. Every wired stage — the
+//! category-assignment routing, the entropy read, the expectation
+//! reconstruction, the recovered §4.3 coupling split, and the
+//! recovered-window §5 synthesis — is exercised by
+//! [`crate::frame_decode`] and `tests/entropy_to_pcm.rs`.
 
 use oxideav_core::{
     CodecCapabilities, CodecId, CodecInfo, CodecParameters, CodecRegistry, CodecTag, Decoder,
@@ -74,9 +81,11 @@ pub fn make_decoder(params: &CodecParameters) -> CoreResult<Box<dyn Decoder>> {
 /// Packet-to-frame adaptor wrapping the crate's decode pipeline in the
 /// framework [`Decoder`] trait.
 ///
-/// See the module docs: the pipeline is complete except the §2.2
-/// category-assignment loop, so `receive_frame` surfaces that single
-/// recorded GAP as a typed unsupported error rather than fabricating
+/// See the module docs: the pipeline is complete including the §2.2
+/// category-assignment loop, but a real packet's decode is blocked on the
+/// loop's stack-resident per-frame inputs (uncaptured `v[]`/budget/`M`)
+/// plus the §1.2 gain-segment VLC, so `receive_frame` surfaces that
+/// remaining GAP as a typed unsupported error rather than fabricating
 /// audio.
 pub struct CookDecoder {
     codec_id: CodecId,
@@ -107,9 +116,10 @@ impl Decoder for CookDecoder {
     fn send_packet(&mut self, packet: &Packet) -> CoreResult<()> {
         // Structurally validate the packet against the wired front end:
         // an empty packet is a container framing error; a non-empty one
-        // is a real coded frame the pipeline can parse up to the §2.2
-        // category-assignment blocker. We do not buffer output because
-        // the entropy→PCM stage needs the (GAP) per-band categories.
+        // is a real coded frame the pipeline can parse up to the
+        // uncaptured per-frame category-assignment inputs. We do not
+        // buffer output because the entropy→PCM stage needs the (GAP)
+        // per-frame value array / budget the §2.2 loop consumes.
         if packet.data.is_empty() {
             return Err(CoreError::invalid(
                 "oxideav-cook: empty packet (no coded Cook frame)",
@@ -120,13 +130,15 @@ impl Decoder for CookDecoder {
 
     fn receive_frame(&mut self) -> CoreResult<Frame> {
         Err(CoreError::unsupported(
-            "oxideav-cook: real-stream decode to PCM is blocked on the §2.2 \
-             per-band category-assignment loop (cook.dll!0x4800), a recorded \
-             DOCS-GAP — the categories are computed in the decoder, not carried \
-             on the wire, so the per-band codebook cannot yet be derived. Every \
-             downstream stage (entropy read, expectation reconstruction, §4.3 \
-             coupling, recovered-window synthesis) is wired; see \
-             oxideav_cook::frame_decode and tests/entropy_to_pcm.rs.",
+            "oxideav-cook: real-stream decode to PCM is blocked on the per-frame \
+             inputs to the §2.2 category-assignment loop (cook.dll!0x4800) — the \
+             loop itself is recovered and wired (oxideav_cook::category_assignment), \
+             but its per-band value array, bit budget and refinement bound are \
+             stack-resident and not captured by the instrumented decode, and the \
+             §1.2 gain-segment record VLC is still unpinned. Every wired stage \
+             (category-assignment routing, entropy read, expectation \
+             reconstruction, §4.3 coupling, recovered-window synthesis) is \
+             exercised; see oxideav_cook::frame_decode and tests/entropy_to_pcm.rs.",
         ))
     }
 
