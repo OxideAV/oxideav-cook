@@ -8,16 +8,20 @@
 //! (`Synthesizer::with_recovered_long_window`). It produces **real,
 //! energy-bearing, audible PCM** from a Cook-format bitstream.
 //!
-//! The one input the trace does not pin — the §2.2 per-band **category
-//! assignment** (the in-decoder bit-allocation loop `cook.dll!0x4800`,
-//! whose refinement algorithm is a recorded DOCS-GAP) — is supplied
-//! here, exactly as documented in `frame_decode`. Everything downstream
-//! of the assignment is the vendor decoder's own pinned arithmetic and
-//! recovered tables, so this is a faithful decode modulo that one GAP.
+//! The §2.2 per-band **category assignment** (the in-decoder
+//! bit-allocation loop `cook.dll!0x4800`) is now recovered:
+//! `computed_categories_decode_to_audible_pcm` drives the whole chain
+//! from `(value array, bit budget, refinement bound)` through the
+//! recovered assignment pass (`decode_spectrum_assigned`) to PCM, while
+//! `cook_entropy_bitstream_decodes_to_audible_pcm` supplies an explicit
+//! category list (the path a caller uses when it already has the per-band
+//! categories). Everything downstream of the assignment is the format's
+//! own pinned arithmetic and recovered tables.
 
 use oxideav_cook::{
-    codebook_for_category, compose_symbol, decode_spectrum, f32_to_i16_sample, spectral_huffman,
-    BandCategory, CategoryIndex, FrameBitReader, SpectralCodebook, SubbandGeometry, Synthesizer,
+    assign_band_categories, category_vector_dims, codebook_for_category, compose_symbol,
+    decode_spectrum, decode_spectrum_assigned, f32_to_i16_sample, spectral_huffman, BandCategory,
+    CategoryIndex, FrameBitReader, SpectralCodebook, SubbandGeometry, Synthesizer,
 };
 
 /// Pack `(value, nbits)` fields MSB-first into a byte buffer (the frame
@@ -150,6 +154,77 @@ fn cook_entropy_bitstream_decodes_to_audible_pcm() {
     let _ = synth2.push_spectrum(&full).unwrap();
     let samples2 = synth2.push_spectrum(&full).unwrap();
     assert_eq!(samples, samples2);
+}
+
+#[test]
+fn computed_categories_decode_to_audible_pcm() {
+    // The full chain now runs from the §2.2 category-assignment loop:
+    // (value array v[], bit budget, refinement bound) -> computed per-band
+    // categories -> codebook-by-category entropy read -> reconstructed
+    // spectrum -> synthesis -> 16-bit PCM. No category is supplied by the
+    // caller; the recovered bit-allocation pass produces them.
+    let subband_count = 12u32;
+    let geom = SubbandGeometry::new(subband_count).unwrap();
+
+    // A flat value array with a generous budget: the base pass assigns a
+    // uniform coded category across every band (no empty bands), so every
+    // subband lands a real coefficient.
+    let values = vec![0i32; subband_count as usize];
+    let budget = 500; // -> uniform finest category (0) for a flat input.
+    let cats = assign_band_categories(&values, budget, 1).unwrap();
+    assert!(
+        cats.iter().all(|c| matches!(c, BandCategory::Coded(_))),
+        "expected an all-coded assignment, got {cats:?}"
+    );
+
+    // Encode one codebook vector per band matching the computed category.
+    let mut fields = Vec::new();
+    for (band, c) in cats.iter().enumerate() {
+        let BandCategory::Coded(ci) = c else {
+            continue;
+        };
+        let huffman = spectral_huffman(codebook_for_category(*ci));
+        let dim = category_vector_dims(*ci).lo as usize;
+        let mut digits = vec![0u32; dim];
+        digits[0] = 1 + (band as u32 & 1); // varying leading magnitude
+        let symbol = compose_symbol(&digits, *ci).unwrap();
+        fields.push(huffman.codeword(symbol).unwrap());
+        fields.push((band as u32 & 1, 1)); // sign for the single non-zero digit
+    }
+    let bytes = pack(&fields);
+
+    // §2.2 assignment + §3 entropy read in one call.
+    let mut reader = FrameBitReader::new(&bytes);
+    let coded = decode_spectrum_assigned(&mut reader, &geom, &values, budget, 1, &[8.0]).unwrap();
+    assert_eq!(coded.len(), geom.total_coded_lines() as usize);
+    let spectral_energy: f32 = coded.iter().map(|v| v * v).sum();
+    assert!(spectral_energy > 0.0, "computed-category read was silent");
+
+    // §5 synthesis to PCM.
+    let mut synth = Synthesizer::with_recovered_long_window();
+    let hop = synth.hop();
+    let mut full = vec![0.0f32; hop];
+    full[..coded.len()].copy_from_slice(&coded);
+    let _warmup = synth.push_spectrum(&full).unwrap();
+    let samples = synth.push_spectrum(&full).unwrap();
+    assert_eq!(samples.len(), hop);
+    assert!(samples.iter().all(|s| s.is_finite()));
+    let pcm_energy: f32 = samples.iter().map(|s| s * s).sum();
+    assert!(pcm_energy > 1e-6, "synthesis produced silent PCM");
+    let pcm16: Vec<i16> = samples
+        .iter()
+        .map(|&s| f32_to_i16_sample(s * 32767.0))
+        .collect();
+    let nonzero = pcm16.iter().filter(|&&s| s != 0).count();
+    assert!(
+        nonzero > hop / 4,
+        "expected a substantially non-silent frame"
+    );
+
+    // Determinism: the computed assignment + decode reproduces exactly.
+    let mut reader2 = FrameBitReader::new(&bytes);
+    let coded2 = decode_spectrum_assigned(&mut reader2, &geom, &values, budget, 1, &[8.0]).unwrap();
+    assert_eq!(coded, coded2);
 }
 
 #[test]
