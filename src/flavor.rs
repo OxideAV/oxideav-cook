@@ -21,6 +21,8 @@ const FLAVOR_TABLE_CSV: &str = include_str!("../tables/flavor-geometry-table.csv
 /// property-descriptor count, not the number of decodable geometry
 /// presets: only indices with a well-formed geometry record (0–30, with
 /// index 30 a single-subband sentinel) carry usable geometry.
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub const FLAVOR_COUNT: u8 = 31;
 
 /// Value returned by the ordinal-7 export `RAGetNumberOfFlavors`
@@ -35,6 +37,8 @@ pub const FLAVOR_COUNT: u8 = 31;
 /// geometry records in the vendored table) and from
 /// [`RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED`] (= 34, the property-
 /// descriptor count returned by the ordinal-9 sibling).
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub const RA_GET_NUMBER_OF_FLAVORS_ADVERTISED: u8 = 0x0f;
 
 /// Value returned by the ordinal-9 export `RAGetNumberOfFlavors2`
@@ -46,6 +50,8 @@ pub const RA_GET_NUMBER_OF_FLAVORS_ADVERTISED: u8 = 0x0f;
 /// `cook.dll!0x17a0`; audit point #12 resolves it as the
 /// property-descriptor count, distinct from [`FLAVOR_COUNT`] (= 31,
 /// the count of decodable geometry records).
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub const RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED: u8 = 0x22;
 
 /// The closing single-subband sentinel record's index. The geometry
@@ -58,6 +64,8 @@ pub const RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED: u8 = 0x22;
 /// Use [`FlavorRecord::is_sentinel`] to discriminate this record at
 /// runtime and [`iter_playable_flavor_records`] to walk only the 30
 /// non-sentinel presets at indices 0..=29.
+// internal — exposed for tests/fuzz; not part of the stable API
+#[doc(hidden)]
 pub const SENTINEL_FLAVOR_INDEX: u8 = 30;
 
 /// One row of the flavor geometry table.
@@ -137,6 +145,7 @@ fn data_lines() -> impl Iterator<Item = &'static str> {
 ///
 /// Returns `None` for indices `>= FLAVOR_COUNT` (no well-formed
 /// geometry record exists there).
+#[doc(hidden)] // internal — exposed for tests/fuzz; not part of the stable API
 pub fn flavor_record(index: u8) -> Option<FlavorRecord> {
     data_lines()
         .nth(index as usize)
@@ -151,6 +160,7 @@ pub fn flavor_record(index: u8) -> Option<FlavorRecord> {
 /// single-subband sentinel (`subband_count = 1`) called out by
 /// `docs/audio/cook/spec/02-cook-flavor-and-extradata-layout.md`
 /// §1.1.
+#[doc(hidden)] // internal — exposed for tests/fuzz; not part of the stable API
 pub fn iter_flavor_records() -> impl Iterator<Item = (u8, FlavorRecord)> {
     data_lines()
         .enumerate()
@@ -168,6 +178,7 @@ pub fn iter_flavor_records() -> impl Iterator<Item = (u8, FlavorRecord)> {
 ///
 /// Anchored by `docs/audio/cook/spec/02-cook-flavor-and-extradata-
 /// layout.md` §1.1 (sentinel record at index 30).
+#[doc(hidden)] // internal — exposed for tests/fuzz; not part of the stable API
 pub fn iter_playable_flavor_records() -> impl Iterator<Item = (u8, FlavorRecord)> {
     iter_flavor_records().filter(|(_, r)| !r.is_sentinel())
 }
@@ -187,6 +198,7 @@ pub fn iter_playable_flavor_records() -> impl Iterator<Item = (u8, FlavorRecord)
 ///
 /// Anchored by `docs/audio/cook/validation/04-cook-stream-validation.md`
 /// §4.1 (the cookie field-set) and §4.4 (record-21 cross-check).
+#[doc(hidden)] // internal — exposed for tests/fuzz; not part of the stable API
 pub fn flavor_indices_matching_cookie(cookie: &crate::cookie::CookCookie) -> Vec<u8> {
     iter_flavor_records()
         .filter(|(_, r)| cookie.matches_flavor(r))

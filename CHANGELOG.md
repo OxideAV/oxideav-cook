@@ -6,6 +6,17 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Marked the crate's internal DSP / table / decode-session public surface
+  `#[doc(hidden)]` (35 modules + their crate-root re-exports, plus the
+  internal `flavor` helpers) so `cargo-semver-checks` no longer treats
+  Cook internals as stable API; the visible surface is the `codec`
+  registration path (`make_decoder` / `register` / `register_codecs` /
+  `CookDecoder`), `CookCookie` (+ `flavor::FlavorRecord`), and the
+  crate-root `Error` / `Result`. Attributes/comments only — no
+  visibility, signature, or behaviour change.
+
 ### Added
 
 - **§2.2 category-assignment / bit-allocation loop recovered and wired
