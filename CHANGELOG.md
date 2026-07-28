@@ -19,6 +19,16 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`decode_frame_spectrum_assigned` — the value-array → routed
+  mono/stereo spectrum bridge.** Threads the recovered §2.2
+  category-assignment loop through the mono/stereo channel routing in a
+  single call: it computes the per-band category list from
+  `(values, budget, refinement_bound)` and then routes through
+  `decode_frame_spectrum` (mono spectrum, or the §4.3 recovered coupling
+  decouple for stereo). Previously the assigned path existed only for the
+  mono `decode_spectrum_assigned`; the stereo route required computing the
+  category list by hand. Cross-checked against the explicit-category path
+  for both channel counts.
 - **Closed-form validation of the runtime-recovered N=1024 MDCT tables
   and the §4.3 coupling rotation table.** New unit tests pin the vendored
   buffers to their generating identities (analysis on the extracted

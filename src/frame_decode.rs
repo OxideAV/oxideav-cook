@@ -220,6 +220,67 @@ pub fn decode_frame_spectrum(
     }
 }
 
+/// Decode one frame's spectral section to a per-channel spectrum,
+/// **computing** the §2.2 per-band category assignment from the
+/// bit-allocation pass rather than taking an explicit category list.
+///
+/// This is [`decode_frame_spectrum`] with the category list replaced by
+/// the recovered §2.2 assignment ([`assign_band_categories`] over
+/// `(values, budget, refinement_bound)`): the routing bridge that threads
+/// the in-decoder bit-allocation loop through the mono/stereo split in a
+/// single call. It is the value-array analog of [`decode_frame_spectrum`]
+/// and the mono-plus-stereo analog of [`decode_spectrum_assigned`].
+///
+/// - `channels == 1`: [`DecodedSpectrum::Mono`] of the assigned decode.
+/// - `channels == 2`: decode the single coupled spectrum, then split it
+///   with [`decouple_stereo_recovered`] over `coupling` (required).
+///
+/// `values`, `budget`, `refinement_bound` and (for stereo) the coupling
+/// band range + indices are the genuinely-unpinned §2.2/§4.1 inputs
+/// supplied by the caller; everything else is the format's own pinned
+/// arithmetic (see the module docs).
+///
+/// # Errors
+///
+/// - [`Error::SpectrumBandCountMismatch`] when `values.len()` is not the
+///   subband count.
+/// - [`Error::CookieInvalidChannels`] for a channel count other than 1/2.
+/// - [`Error::StereoCouplingMissing`] when `channels == 2` and `coupling`
+///   is `None`.
+/// - any error [`decode_frame_spectrum`] / [`assign_band_categories`]
+///   raises.
+// Mirrors `decode_frame_spectrum`'s parameter list plus the three §2.2
+// bit-allocation scalars (`values` / `budget` / `refinement_bound`); the
+// inputs are the frame's own decode arguments, not incidental config.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_frame_spectrum_assigned(
+    reader: &mut FrameBitReader,
+    geometry: &SubbandGeometry,
+    values: &[i32],
+    budget: i32,
+    refinement_bound: u32,
+    band_gains: &[f32],
+    channels: u16,
+    coupling: Option<&FrameCoupling<'_>>,
+) -> Result<DecodedSpectrum, Error> {
+    let subband_count = geometry.subband_count();
+    if values.len() as u32 != subband_count {
+        return Err(Error::SpectrumBandCountMismatch {
+            subband_count,
+            got: values.len(),
+        });
+    }
+    let categories = assign_band_categories(values, budget, refinement_bound)?;
+    decode_frame_spectrum(
+        reader,
+        geometry,
+        &categories,
+        band_gains,
+        channels,
+        coupling,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,6 +516,99 @@ mod tests {
         let mut reader = FrameBitReader::new(&bytes);
         assert_eq!(
             decode_spectrum_assigned(&mut reader, &geom, &[0i32; 7], 100, 1, &[1.0]).unwrap_err(),
+            Error::SpectrumBandCountMismatch {
+                subband_count: 8,
+                got: 7
+            }
+        );
+    }
+
+    #[test]
+    fn assigned_frame_spectrum_mono_matches_two_step() {
+        // The one-call value-array path equals computing the category list
+        // then routing it through decode_frame_spectrum — mono.
+        use crate::category_assignment::assign_band_categories;
+        let geom = SubbandGeometry::new(8).unwrap();
+        let values = vec![0i32; 8];
+        let budget = 500; // all-coded finest category.
+        let cats = assign_band_categories(&values, budget, 1).unwrap();
+        let mut fields = Vec::new();
+        for (band, c) in cats.iter().enumerate() {
+            if let BandCategory::Coded(ci) = c {
+                let cb = codebook_for_category(*ci);
+                let huffman = spectral_huffman(cb);
+                let dim = crate::spectral::category_vector_dims(*ci).lo as usize;
+                let mut digits = vec![0u32; dim];
+                digits[0] = 1 + (band as u32 & 1);
+                let symbol = compose_symbol(&digits, *ci).unwrap();
+                fields.push(huffman.codeword(symbol).unwrap());
+                fields.push((band as u32 & 1, 1));
+            }
+        }
+        let bytes = pack(&fields);
+
+        let mut ra = FrameBitReader::new(&bytes);
+        let via_assigned =
+            decode_frame_spectrum_assigned(&mut ra, &geom, &values, budget, 1, &[2.0], 1, None)
+                .unwrap();
+        let mut rb = FrameBitReader::new(&bytes);
+        let via_explicit = decode_frame_spectrum(&mut rb, &geom, &cats, &[2.0], 1, None).unwrap();
+        assert_eq!(via_assigned, via_explicit);
+        assert!(matches!(via_assigned, DecodedSpectrum::Mono(_)));
+    }
+
+    #[test]
+    fn assigned_frame_spectrum_stereo_routes_through_coupling() {
+        use crate::category_assignment::assign_band_categories;
+        let geom = SubbandGeometry::new(8).unwrap();
+        let values = vec![0i32; 8];
+        let budget = 500;
+        let cats = assign_band_categories(&values, budget, 1).unwrap();
+        let mut fields = Vec::new();
+        for (band, c) in cats.iter().enumerate() {
+            if let BandCategory::Coded(ci) = c {
+                let huffman = spectral_huffman(codebook_for_category(*ci));
+                let dim = crate::spectral::category_vector_dims(*ci).lo as usize;
+                let mut digits = vec![0u32; dim];
+                digits[0] = 1;
+                let symbol = compose_symbol(&digits, *ci).unwrap();
+                fields.push(huffman.codeword(symbol).unwrap());
+                fields.push((band as u32 & 1, 1));
+            }
+        }
+        let bytes = pack(&fields);
+        let indices = [0u32, 0, 0];
+        let coupling = FrameCoupling {
+            coupling_bands: 2..5,
+            indices: &indices,
+        };
+        let mut ra = FrameBitReader::new(&bytes);
+        let via_assigned = decode_frame_spectrum_assigned(
+            &mut ra,
+            &geom,
+            &values,
+            budget,
+            1,
+            &[2.0],
+            2,
+            Some(&coupling),
+        )
+        .unwrap();
+        let mut rb = FrameBitReader::new(&bytes);
+        let via_explicit =
+            decode_frame_spectrum(&mut rb, &geom, &cats, &[2.0], 2, Some(&coupling)).unwrap();
+        assert_eq!(via_assigned, via_explicit);
+        assert!(matches!(via_assigned, DecodedSpectrum::Stereo(_)));
+    }
+
+    #[test]
+    fn assigned_frame_spectrum_rejects_wrong_value_count() {
+        let geom = SubbandGeometry::new(8).unwrap();
+        let bytes = [0u8; 8];
+        let mut reader = FrameBitReader::new(&bytes);
+        assert_eq!(
+            decode_frame_spectrum_assigned(&mut reader, &geom, &[0i32; 7], 100, 1, &[1.0], 1, None)
+                .unwrap_err(),
             Error::SpectrumBandCountMismatch {
                 subband_count: 8,
                 got: 7

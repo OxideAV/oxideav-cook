@@ -472,8 +472,8 @@ pub use frame::{
 };
 #[doc(hidden)]
 pub use frame_decode::{
-    decode_frame_spectrum, decode_spectrum, decode_spectrum_assigned, DecodedSpectrum,
-    FrameCoupling,
+    decode_frame_spectrum, decode_frame_spectrum_assigned, decode_spectrum,
+    decode_spectrum_assigned, DecodedSpectrum, FrameCoupling,
 };
 #[doc(hidden)]
 pub use gain::{
