@@ -8,6 +8,18 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Corrected the stale frame-body blocker narrative.** The §3.2
+  spectral codebook code/length bytes — once the file-image GAP the
+  `SpectralCodebookBytesUnavailable` variant was named for — were
+  recovered and are now vendored + wired; given a per-band category list
+  the §3 read runs end-to-end. The frame-body walk's honest remaining
+  blocker is the **pre-spectral read layout** that reaches §3 on a real
+  frame: which recovered codebook the §1.2 gain-index / §2.2
+  quant-index VLC reads select, and how the category-assignment value
+  array `v[]` is formed from the bitstream — neither pinned by `spec/05`.
+  Reworded the `Error::SpectralCodebookBytesUnavailable` doc, the
+  `frame` orchestrator docs, and the `Driver` docs accordingly; the
+  variant name is retained for API/back-compat (no behaviour change).
 - Marked the crate's internal DSP / table / decode-session public surface
   `#[doc(hidden)]` (35 modules + their crate-root re-exports, plus the
   internal `flavor` helpers) so `cargo-semver-checks` no longer treats

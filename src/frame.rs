@@ -27,49 +27,63 @@
 //!    map ([`crate::subband::SubbandGeometry`]) the dequant walk and the
 //!    coupling split both consume.
 //! 3. **Spectral VLC dequant (§3).** Each coded band reads vector VLC
-//!    symbols from one of the seven codebooks; the codebook *contents*
-//!    (per-symbol code/length bytes) are built in the decoder's `.data`
-//!    BSS at init and are **not** in the file image (`spec/05` §3.2).
-//!    This is the **hard blocker** — the walk stops here precisely,
-//!    surfacing [`crate::Error::SpectralCodebookBytesUnavailable`]
-//!    (tracked as docs-gap #1775).
+//!    symbols from one of the seven codebooks. The codebook *contents*
+//!    (per-symbol code/length bytes) — once the §3.2 file-image GAP —
+//!    were **recovered** and are now vendored and wired
+//!    ([`crate::codebook`] / [`crate::spectral_decode`]); given a
+//!    per-band category list the §3 read runs to completion
+//!    ([`crate::frame_decode::decode_spectrum`]). What is **not** pinned
+//!    by `spec/05` is the *pre-spectral read layout* that reaches §3 on a
+//!    real frame: which recovered codebook the §1.2 gain-index and §2.2
+//!    per-band quant-index VLC reads select, and how the
+//!    category-assignment value array `v[]` is formed from the bitstream.
+//!    So the walk cannot position the reader at the §3 data from the
+//!    frame head and stops there, surfacing
+//!    [`crate::Error::SpectralCodebookBytesUnavailable`] (the variant
+//!    name kept for compatibility; it now denotes the read-layout gap,
+//!    not a missing-bytes gap).
 //!
 //! The orchestrator is therefore a *driver to the documented blocker*:
 //! it performs every stage the trace pins statically and reports exactly
-//! the sub-step where the BSS-built tables are required, rather than
-//! guessing the codebook bytes.
+//! the sub-step where the unpinned per-band read layout is required,
+//! rather than guessing it. Callers that already hold the post-gain
+//! reader position and a category list run the whole §3→§5 chain through
+//! [`crate::frame_decode::decode_frame_spectrum`] /
+//! [`crate::frame_decode::decode_frame_spectrum_assigned`].
 //!
 //! ## Post-entropy reconstruction (downstream of the blocker)
 //!
-//! The §3.2 BSS blocker gates only the *entropy read*. Everything
-//! downstream of it — the dequant assembly (§3.1), the per-band fill over
-//! the §2.1 subband geometry, and the §4 stereo coupling split — is pinned
+//! The read-layout blocker gates only *reaching* the entropy read from
+//! the frame head. Everything from the §3 read onward — given a category
+//! list — is wired: the dequant assembly (§3.1), the per-band fill over
+//! the §2.1 subband geometry, and the §4 stereo coupling split are pinned
 //! statically. [`reconstruct_frame_spectrum`] ties those into a single
 //! **post-entropy → iMDCT input** stage: given the entropy-decoded per-band
-//! inputs (the §3.2 GAP-sourced values + signs, and the §4.3 GAP-sourced
-//! coupling `coef` table, supplied by the caller) it produces one
+//! inputs (the decoded values + signs, and the recovered §4.3 coupling
+//! `coef` table, supplied by the caller) it produces one
 //! [`FrameSpectrum`] — a mono spectrum or a stereo [`StereoSpectra`] pair —
 //! the iMDCT kernel would consume. The reconstruction arithmetic lives in
 //! [`crate::reconstruct`]; this module routes it by channel count.
 //!
 //! ## What stays a GAP (not wired)
 //!
-//! - The per-symbol spectral codebook **code/length bytes** (§3.2) and
-//!   the per-coupling-width rotation **coefficient values** (§4.3) are
-//!   runtime-built in BSS — the walk reaches the §3 point that needs
-//!   them and stops (docs-gap #1775).
-//! - The §2.2 category-*assignment* bit-allocation loop (keyed off the
-//!   `0x8f38` per-category expected-cost LUT, not among the extracted
-//!   tables) is a separate recorded DOCS-GAP.
+//! - The **pre-spectral read layout** that reaches §3 on a real frame:
+//!   which recovered codebook the §1.2 gain-index / §2.2 quant-index VLC
+//!   reads select, and how the category-assignment value array `v[]` is
+//!   formed from the bitstream — `spec/05` pins neither. This is the
+//!   sub-step the walk stops at.
+//! - The §2.2 category-*assignment* bit-allocation loop is itself
+//!   **recovered and wired** ([`crate::category_assignment`]); it is the
+//!   `v[]` **input** to it that the frame head does not pin.
 //! - The iMDCT kernel (§5, the `0xa1b0` rotation table) is a recorded
-//!   spec/01 §6 GAP.
+//!   spec/01 §6 GAP; the recovered N=1024 window/twiddles feed the
+//!   canonical transform ([`crate::imlt`], [`crate::synthesis`]).
 //!
 //! ## Wall-respect note
 //!
 //! Every behavioural fact here is anchored to `spec/05` §0–§4; the stage
-//! order and the band → line geometry are the trace's own. No codebook /
-//! coupling-coefficient bytes are guessed — the walk stops at the
-//! documented BSS blocker.
+//! order and the band → line geometry are the trace's own. No per-band
+//! read layout is guessed — the walk stops at the unpinned sub-step.
 
 use crate::{
     bitreader::FrameBitReader,
@@ -79,8 +93,8 @@ use crate::{
     Error,
 };
 
-/// The decode progress one frame-body walk reached before the documented
-/// BSS blocker.
+/// The decode progress one frame-body walk reached before the unpinned
+/// pre-spectral read-layout blocker.
 ///
 /// Returned by [`decode_frame_body`] on the real-decode path: it carries
 /// the statically-pinned state assembled up to the §3 spectral-VLC
@@ -104,7 +118,8 @@ pub struct FrameWalk {
 }
 
 /// Walk the backend per-frame body as far as the statically-pinned
-/// frame-syntax allows, stopping at the documented §3.2 BSS blocker.
+/// frame-syntax allows, stopping at the unpinned pre-spectral read
+/// layout.
 ///
 /// `frame` is one sub-packet's bitstream (the §0 frame body); `channels`
 /// and `subband_count` come from the wired [`crate::DecodeConfig`].
@@ -113,15 +128,18 @@ pub struct FrameWalk {
 ///
 /// 1. Reads the §1.1 gain-envelope segment count from `frame`.
 /// 2. Builds the §2.1 subband geometry for `subband_count`.
-/// 3. Reaches the §3 spectral-VLC dequant step and stops:
-///    [`Error::SpectralCodebookBytesUnavailable`] — the seven codebooks'
-///    per-symbol code/length bytes are built in `.data` BSS at init and
-///    are not present in the file image (`spec/05` §3.2, docs-gap
-///    #1775). The walk does **not** guess them.
+/// 3. Cannot position the reader at the §3 spectral data and stops:
+///    [`Error::SpectralCodebookBytesUnavailable`]. The seven codebooks'
+///    bytes are recovered and wired (the §3 read runs given a category
+///    list); what `spec/05` does not pin is the pre-spectral read layout
+///    that reaches §3 on a real frame — which recovered codebook the
+///    §1.2 gain-index / §2.2 quant-index VLC reads select, and how the
+///    category-assignment `v[]` array is formed. The walk does **not**
+///    guess it.
 ///
 /// This is the faithful "drive to the documented blocker" entry point:
-/// every pinned stage runs, and the precise sub-step needing the
-/// dynamic BSS dump is surfaced as a typed error rather than fabricated.
+/// every pinned stage runs, and the precise sub-step needing the unpinned
+/// read layout is surfaced as a typed error rather than fabricated.
 ///
 /// # Errors
 ///
@@ -130,9 +148,9 @@ pub struct FrameWalk {
 /// - [`Error::CookieZeroSubbandCount`] if `subband_count == 0`.
 /// - [`Error::BitAllocAxisOutOfRange`] if `subband_count` exceeds the
 ///   51-entry subband LUT.
-/// - [`Error::SpectralCodebookBytesUnavailable`] — the documented §3.2
-///   BSS blocker (docs-gap #1775); always returned for a non-trivial
-///   stream, after the pinned prefix has run.
+/// - [`Error::SpectralCodebookBytesUnavailable`] — the read-layout
+///   blocker; always returned for a non-trivial stream, after the pinned
+///   prefix has run.
 pub fn decode_frame_body(
     frame: &[u8],
     channels: u16,
@@ -140,16 +158,18 @@ pub fn decode_frame_body(
 ) -> Result<FrameWalk, Error> {
     // Run the statically-pinned prefix (§1.1 gain count + §2.1 subband
     // geometry); any stage-1/2 error surfaces here. If the prefix
-    // succeeds the walk has reached the §3 spectral-VLC dequant step,
-    // whose codebook code/length bytes are runtime-built in BSS
-    // (spec/05 §3.2) and not in the file image — stop precisely here
-    // (docs-gap #1775) rather than guess the codebook contents.
+    // succeeds the walk has reached the §3 spectral-VLC dequant step:
+    // the codebooks are recovered, but the pre-spectral read layout that
+    // positions the reader there (§1.2 gain-index / §2.2 quant-index VLC
+    // codebook selection, and the `v[]` formation the category-assignment
+    // loop consumes) is not pinned by spec/05 — stop precisely here
+    // rather than guess it.
     let _prefix = frame_body_prefix(frame, channels, subband_count)?;
     Err(Error::SpectralCodebookBytesUnavailable)
 }
 
 /// Walk the pinned prefix and return the assembled [`FrameWalk`] state up
-/// to (but not raising) the §3.2 BSS blocker.
+/// to (but not raising) the read-layout blocker.
 ///
 /// Identical to [`decode_frame_body`] except it returns the
 /// [`FrameWalk`] instead of the [`Error::SpectralCodebookBytesUnavailable`]
@@ -296,9 +316,9 @@ mod tests {
     }
 
     #[test]
-    fn decode_stops_at_documented_bss_blocker() {
-        // The full walk runs the pinned prefix then surfaces the §3.2
-        // BSS blocker (docs-gap #1775) — not NotImplemented, not a guess.
+    fn decode_stops_at_documented_read_layout_blocker() {
+        // The full walk runs the pinned prefix then surfaces the
+        // read-layout blocker — not NotImplemented, not a guess.
         let frame = frame_two_segments();
         assert_eq!(
             decode_frame_body(&frame, 2, 20).unwrap_err(),

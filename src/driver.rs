@@ -173,10 +173,10 @@ impl DecodeGate {
 /// The driver drives the backend frame-decode through the
 /// [`crate::frame`] orchestrator, which runs the statically-pinned
 /// frame-body prefix (§1.1 gain count, §2.1 subband geometry) and stops
-/// at the documented §3.2 BSS codebook blocker
-/// ([`Error::SpectralCodebookBytesUnavailable`], docs-gap #1775); the
-/// inverse-MDCT / coupling-coefficient stages past that blocker are
-/// later-round work. [`Driver::prepare_call`] gives consumers the
+/// at the unpinned pre-spectral read-layout blocker
+/// ([`Error::SpectralCodebookBytesUnavailable`] — the recovered codebooks
+/// are wired, but which one the §1.2/§2.2 reads select and how `v[]` is
+/// formed is not pinned by spec/05). [`Driver::prepare_call`] gives consumers the
 /// orchestrated stage 1+2 output (descramble + sub-packet split)
 /// directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

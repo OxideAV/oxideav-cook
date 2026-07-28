@@ -924,18 +924,33 @@ pub enum Error {
         /// The number of coupling indices the caller supplied.
         got: usize,
     },
-    /// The backend per-frame walk reached the §3 spectral-VLC dequant
-    /// step, whose seven Huffman codebooks' per-symbol code/length bytes
-    /// are **runtime-built in `.data` BSS at init** and are not present
-    /// in the file image (`spec/05` §3.2 — docs-gap #1775).
+    /// The backend per-frame walk cannot advance into the §3 spectral
+    /// entropy read from raw frame bytes: the **pre-spectral bitstream
+    /// read layout** that positions the reader at the §3 data is not
+    /// pinned by the allowed spec.
+    ///
+    /// The seven Huffman codebooks' per-symbol code/length bytes — once
+    /// the file-image GAP this variant was named for (docs-gap #1775) —
+    /// were subsequently **recovered** and are now vendored
+    /// (`tables/spectral-codebook-{codes,code-lengths}.csv`) and wired
+    /// ([`crate::codebook`] / [`crate::spectral_decode`]); given a
+    /// per-band category list the §3 read runs end-to-end
+    /// ([`decode_spectrum`]). What remains unpinned by `spec/05` is the
+    /// **read layout that reaches** that step on a real frame: which of
+    /// the recovered codebooks the §1.2 gain-index and §2.2 per-band
+    /// quant-index VLC reads select, and how the category-assignment
+    /// value array `v[]` is formed from the bitstream (the input the
+    /// recovered [`crate::category_assignment`] loop consumes). With the
+    /// reader positioned at the §3 data and a category list in hand the
+    /// walk completes; positioning it from the frame head does not.
     ///
     /// Distinct from [`Error::NotImplemented`]: every statically-pinned
     /// frame-body stage before this point ran (the §1.1 gain segment
-    /// count, the §2.1 subband geometry); the walk stops precisely at
-    /// the sub-step that needs a dynamic BSS dump of the populated
-    /// codebook tables (a Validator/Extractor round), rather than
-    /// fabricating the codebook contents. The same BSS-build mechanism
-    /// gates the §4.3 per-coupling-width rotation coefficient values.
+    /// count, the §2.1 subband geometry). The same
+    /// read-layout / selection gap (not a missing-bytes gap) is what a
+    /// future Validator round that traces the live decoder's per-band
+    /// reads would close. The variant name is retained for API
+    /// compatibility.
     SpectralCodebookBytesUnavailable,
     /// A reciprocal-table index was outside the seven-entry `0x8fac`
     /// Q-format reciprocal array
