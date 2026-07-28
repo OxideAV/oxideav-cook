@@ -19,6 +19,14 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Vendored the staged §2.2 category-assignment constants table**
+  (`tables/category-assignment-params.csv`, algorithm `cook.dll!0x4800`)
+  with a typed named-scalar loader (`tables::category_assignment_params`
+  / `category_assignment_param`). The `category_assignment` module's
+  constants (`K = 32`, offset start `−32`, the six bisection steps, the
+  `0..=7` clip, `cost[7] = 0`, the `+0x28` refinement-bound field) are
+  now bit-locked to the vendored table by cross-check tests instead of
+  living only as retyped literals.
 - **§2.2 category-assignment / bit-allocation loop recovered and wired
   (`cook.dll!0x4800`).** The new `category_assignment` module implements
   the routing piece that turns the per-band value array `v[]` and the

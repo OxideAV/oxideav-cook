@@ -34,6 +34,7 @@
 //! | [`spectral_dequant_scale`] |   8 | dequant magnitude-scale LUT (non-zero idx 5/6/7 = `2^-2.5/2^-2/2^-0.5`) |
 //! | [`sign_lut`]               |   2 | spectral sign LUT `{+1, -1}` |
 //! | [`category_expectation`]   |  98 | level → reconstructed-magnitude table (7 rows × stride 14) |
+//! | [`category_assignment_params`] | 14 | named §2.2 category-assignment algorithm constants (`cook.dll!0x4800`) |
 //!
 //! Each loader caches its parse via [`std::sync::OnceLock`] so the CSV
 //! is split once per process. Lengths are advertised by the constants
@@ -72,6 +73,8 @@ const QUANT_INDEX_RECIPROCALS_CSV: &str = include_str!("../tables/quant-index-re
 const SPECTRAL_DEQUANT_SCALE_CSV: &str = include_str!("../tables/spectral-dequant-scale.csv");
 const SIGN_LUT_CSV: &str = include_str!("../tables/sign-lut.csv");
 const CATEGORY_EXPECTATION_CSV: &str = include_str!("../tables/category-expectation.csv");
+const CATEGORY_ASSIGNMENT_PARAMS_CSV: &str =
+    include_str!("../tables/category-assignment-params.csv");
 
 // ---- advertised lengths (Feist facts from the `.meta` files) ------
 
@@ -179,6 +182,14 @@ pub const SIGN_LUT_LEN: usize = 2;
 /// (`tables/category-expectation.meta`, RVA `0x8fc8`, region
 /// `0x8fc8..0x9150`).
 pub const CATEGORY_EXPECTATION_LEN: usize = 98;
+
+/// `category_assignment_params` data-row count — the 14 named scalar
+/// constants of the §2.2 category-assignment algorithm
+/// (`tables/category-assignment-params.csv`, algorithm
+/// `cook.dll!0x4800`): base `K`, offset start, six bisection steps,
+/// divisor, the two clip bounds, the cost-LUT RVA, the category-7 cost,
+/// and the refinement-bound context-field offset.
+pub const CATEGORY_ASSIGNMENT_PARAMS_ROWS: usize = 14;
 
 /// Row stride of the `category_expectation` table — 14 f32 per
 /// category row (= the largest per-category level range,
@@ -902,6 +913,74 @@ pub fn mdct_windows() -> [&'static [f32]; 5] {
         rows[3].as_slice(),
         rows[4].as_slice(),
     ]
+}
+
+/// The §2.2 category-assignment algorithm constants
+/// (`tables/category-assignment-params.csv`, algorithm
+/// `cook.dll!0x4800`), parsed from the vendored named-scalar table.
+///
+/// The staged table records the behavioural constants of the recovered
+/// bit-allocation pass as `(param, value)` rows (values in decimal or
+/// `0x`-prefixed hex). This loader parses them on demand so the numbers
+/// are never retyped into source; the typed
+/// [`crate::category_assignment`] constants are cross-checked against
+/// this table by unit tests.
+///
+/// Panics at first access if a named row is missing or non-numeric —
+/// the same fail-loud contract as every other vendored-table loader.
+pub fn category_assignment_params() -> &'static [(String, i64)] {
+    static T: OnceLock<Vec<(String, i64)>> = OnceLock::new();
+    T.get_or_init(|| {
+        let mut out = Vec::new();
+        for (idx, line) in CATEGORY_ASSIGNMENT_PARAMS_CSV.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || idx == 0 {
+                // Header row: `param,value,note`.
+                continue;
+            }
+            // Notes may themselves contain commas — split off the first
+            // two fields only.
+            let mut fields = line.splitn(3, ',');
+            let name = fields
+                .next()
+                .unwrap_or_else(|| panic!("category-assignment-params row {idx}: missing name"));
+            let raw = fields
+                .next()
+                .unwrap_or_else(|| panic!("category-assignment-params row {idx}: missing value"))
+                .trim();
+            let value = if let Some(hex) = raw.strip_prefix("0x") {
+                i64::from_str_radix(hex, 16)
+            } else if let Some(hex) = raw.strip_prefix("-0x") {
+                i64::from_str_radix(hex, 16).map(|v| -v)
+            } else {
+                raw.parse::<i64>()
+            }
+            .unwrap_or_else(|e| {
+                panic!("category-assignment-params row {idx} ({name}): non-numeric {raw:?}: {e}")
+            });
+            out.push((name.to_owned(), value));
+        }
+        assert_eq!(
+            out.len(),
+            CATEGORY_ASSIGNMENT_PARAMS_ROWS,
+            "category-assignment-params.csv must hold {CATEGORY_ASSIGNMENT_PARAMS_ROWS} data rows"
+        );
+        out
+    })
+}
+
+/// One named §2.2 category-assignment constant from the vendored
+/// [`category_assignment_params`] table.
+///
+/// Panics if `name` is not a row of the table (a programming error —
+/// the callers name compile-time-known rows).
+#[must_use]
+pub fn category_assignment_param(name: &str) -> i64 {
+    category_assignment_params()
+        .iter()
+        .find(|(n, _)| n == name)
+        .unwrap_or_else(|| panic!("category-assignment-params has no row named {name:?}"))
+        .1
 }
 
 #[cfg(test)]

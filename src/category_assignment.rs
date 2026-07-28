@@ -350,6 +350,54 @@ mod tests {
     }
 
     #[test]
+    fn constants_cross_check_the_vendored_params_table() {
+        // Every module constant equals the vendored named-scalar row of
+        // `tables/category-assignment-params.csv` — the staged recovery
+        // of the `cook.dll!0x4800` algorithm constants. The typed
+        // constants exist for const-context use; this pin keeps them
+        // bit-locked to the staged table.
+        use crate::tables::category_assignment_param as p;
+        assert_eq!(i64::from(BASE_CONSTANT_K), p("base_constant_K"));
+        assert_eq!(i64::from(OFFSET_START), p("offset_start"));
+        for (i, &step) in BISECTION_STEPS.iter().enumerate() {
+            assert_eq!(i64::from(step), p(&format!("bisection_step_{i}")));
+        }
+        // The `>> 1` arithmetic shift in `base_category` is the table's
+        // divisor-2 row.
+        assert_eq!(p("category_divisor"), 2);
+        assert_eq!(i64::from(CATEGORY_CLIP_LO), p("category_clip_lo"));
+        assert_eq!(i64::from(CATEGORY_CLIP_HI), p("category_clip_hi"));
+        // cost[7] = 0 (the empty band spends no bits).
+        assert_eq!(i64::from(category_cost(7)), p("cost_cat7"));
+        // The cost LUT the pass reads is the 0x8f38 table this crate
+        // vendors as category-cost-lut.csv.
+        assert_eq!(p("cost_lut_rva"), 0x8f38);
+        // The Stage-2 refinement bound is the decode-state field +0x28.
+        assert_eq!(p("refinement_bound_field"), 0x28);
+    }
+
+    #[test]
+    fn params_table_has_exactly_the_named_rows() {
+        let rows = crate::tables::category_assignment_params();
+        assert_eq!(rows.len(), crate::tables::CATEGORY_ASSIGNMENT_PARAMS_ROWS);
+        let names: Vec<&str> = rows.iter().map(|(n, _)| n.as_str()).collect();
+        for want in [
+            "base_constant_K",
+            "offset_start",
+            "bisection_step_0",
+            "bisection_step_5",
+            "category_divisor",
+            "category_clip_lo",
+            "category_clip_hi",
+            "cost_lut_rva",
+            "cost_cat7",
+            "refinement_bound_field",
+        ] {
+            assert!(names.contains(&want), "missing param row {want:?}");
+        }
+    }
+
+    #[test]
     fn base_formula_reproduces_the_pinned_vector() {
         // provenance/08: v=[0,4,8,12,2,6,10,14], budget 250 -> offset -17
         // -> cats [7,5,3,1,6,4,2,0].
