@@ -77,7 +77,7 @@
 //!   `v[]` **input** to it that the frame head does not pin.
 //! - The iMDCT kernel (§5, the `0xa1b0` rotation table) is a recorded
 //!   spec/01 §6 GAP; the recovered N=1024 window/twiddles feed the
-//!   canonical transform ([`crate::imlt`], [`crate::synthesis`]).
+//!   canonical transform ([`crate::imlt_direct`], [`crate::Synthesizer`]).
 //!
 //! ## Wall-respect note
 //!
