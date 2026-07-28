@@ -19,6 +19,17 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Closed-form validation of the runtime-recovered N=1024 MDCT tables
+  and the §4.3 coupling rotation table.** New unit tests pin the vendored
+  buffers to their generating identities (analysis on the extracted
+  numbers only): the pre/post-rotation twiddles are the MDCT rotation
+  `(cos, sin)(π·(k+¼)/1024)` on the unit circle; the long apodisation
+  half-window is the scaled half-cosine `(1/√512)·cos(π·k/1024)` (peak
+  `1/√512` at tap 0, zero at tap 512); and the de-permuted coupling
+  coefficient table is the quarter-turn sweep `cos(j·π/256)` over the
+  first 256 slots and `sin(r·π/256)` over the second 256 — the §4.2
+  mirror-pan angle law. These strengthen the earlier qualitative shape
+  checks to bit-precise identities.
 - **Vendored the staged §2.2 category-assignment constants table**
   (`tables/category-assignment-params.csv`, algorithm `cook.dll!0x4800`)
   with a typed named-scalar loader (`tables::category_assignment_params`

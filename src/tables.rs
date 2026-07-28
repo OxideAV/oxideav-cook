@@ -1343,6 +1343,58 @@ mod tests {
     }
 
     #[test]
+    fn long_twiddles_are_the_mdct_rotation_on_the_unit_circle() {
+        // The recovered N=1024 pre/post-rotation twiddles are the
+        // standard MDCT rotation sampled at θ_k = π·(k + ¼)/N: the k-th
+        // (cos, sin) pair. Pinning the vendored buffers to that closed
+        // form both validates the recovery and documents the generating
+        // identity — analysis on the extracted numbers only.
+        let cos = mdct_twiddle_cos_1024();
+        let sin = mdct_twiddle_sin_1024();
+        let n = MDCT_TWIDDLE_1024_LEN as f64;
+        for (k, (&ck, &sk)) in cos.iter().zip(sin.iter()).enumerate() {
+            let theta = std::f64::consts::PI * (k as f64 + 0.25) / (2.0 * n);
+            // 2N = 1024; the twiddle spans θ = π(k+¼)/1024.
+            let wc = theta.cos() as f32;
+            let ws = theta.sin() as f32;
+            assert!(
+                (ck - wc).abs() < 1e-6,
+                "cos twiddle[{k}] = {ck} vs cos(π(k+¼)/1024) = {wc}"
+            );
+            assert!(
+                (sk - ws).abs() < 1e-6,
+                "sin twiddle[{k}] = {sk} vs sin(π(k+¼)/1024) = {ws}"
+            );
+            // Unit-circle: cos² + sin² == 1 (the .meta's own check).
+            let r = (ck as f64).hypot(sk as f64);
+            assert!((r - 1.0).abs() < 1e-4, "twiddle[{k}] not on unit circle");
+        }
+    }
+
+    #[test]
+    fn long_window_is_the_scaled_half_cosine_apodisation() {
+        // The recovered N=1024 apodisation half-window is, to f32
+        // precision, the scaled half-cosine w[k] = (1/√512)·cos(π·k/1024)
+        // (peak 1/√512 at k=0, falling monotonically to 0 at k=512 —
+        // exactly the shape the .meta records). Pin the vendored taps to
+        // that generating identity; the folded 1/√(N/2) MDCT
+        // normalisation is the 1/√512 scale.
+        let w = mdct_window_1024();
+        let s = 1.0f64 / (512.0f64).sqrt();
+        let n2 = 1024.0f64;
+        for (k, &wk) in w.iter().enumerate() {
+            let want = (s * (std::f64::consts::PI * k as f64 / n2).cos()) as f32;
+            assert!(
+                (wk - want).abs() < 5e-6,
+                "window[{k}] = {wk} vs (1/√512)·cos(π·{k}/1024) = {want}"
+            );
+        }
+        // Endpoints the .meta pins: peak at 0, zero at 512.
+        assert!((w[0] as f64 - s).abs() < 1e-6, "window peak must be 1/√512");
+        assert!(w[512].abs() < 1e-6, "window must reach 0 at tap 512");
+    }
+
+    #[test]
     fn coupling_permutation_is_a_bit_reversal_involution() {
         let p = coupling_index_permutation();
         // .meta: bit-reversed order 0, 256, 128, … — a 9-bit

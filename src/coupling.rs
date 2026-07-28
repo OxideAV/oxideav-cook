@@ -495,6 +495,32 @@ mod tests {
     }
 
     #[test]
+    fn depermuted_table_matches_the_quarter_turn_closed_form() {
+        // The recovered §4.3 table de-permutes, to f32 precision, to the
+        // quarter-turn sweep: the first 256 slots are coef[j] = cos(j·π/256)
+        // (a full half-circle +1 → −1), the second 256 are
+        // coef[256+r] = sin(r·π/256). Pinning the vendored values to that
+        // generating identity validates the recovery + de-permutation and
+        // documents the mirror-pan angle law — analysis on the extracted
+        // numbers only, no external source.
+        let t = coupling_coefficient_table();
+        for (j, &tj) in t[..256].iter().enumerate() {
+            let want = (std::f64::consts::PI * j as f64 / 256.0).cos() as f32;
+            assert!(
+                (tj - want).abs() < 1e-6,
+                "coef[{j}] = {tj} vs cos({j}·π/256) = {want}"
+            );
+        }
+        for (r, &tr) in t[256..].iter().enumerate() {
+            let want = (std::f64::consts::PI * r as f64 / 256.0).sin() as f32;
+            assert!(
+                (tr - want).abs() < 1e-6,
+                "coef[256+{r}] = {tr} vs sin({r}·π/256) = {want}"
+            );
+        }
+    }
+
+    #[test]
     fn mirror_pan_pairs_conserve_energy() {
         // The §4.2 pair (coef[j], coef[Ncoup-1-j]) behaves as a
         // (cos θ, sin θ) pan: its energy stays within ~1.3% of unity
