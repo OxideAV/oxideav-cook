@@ -15,9 +15,16 @@ satisfy clean-room separation. The prior history is preserved on the
 `old` branch for archival but is forbidden input for the rebuild.
 
 The structural / table / per-call-orchestration layers are wired and
-validated against a real RealAudio Cook stream; the backend frame-decode
-transform (bitstream reader, gain/quantiser, inverse MDCT, joint-stereo
-coupling) is not yet implemented (see "Not yet implemented").
+validated against a real RealAudio Cook stream, and the **decode
+transform is assembled end-to-end**: the §3 spectral entropy read (over
+the recovered codebooks), the §2.2 category-assignment / bit-allocation
+loop, the §4 joint-stereo coupling split, and the §5 iMDCT / windowing /
+overlap-add all wire into audible 16-bit PCM. What is **not** yet pinned
+is the per-frame **pre-spectral bitstream read layout** that reaches the
+§3 data from the frame head on a real stream — which recovered codebook
+the §1.2 gain-index / §2.2 quant-index VLC reads select, and how the
+category-assignment value array `v[]` is formed — plus the iMDCT kernel's
+exact normalisation/sign convention (see "Not yet implemented").
 
 The rebuild draws only from the strict-isolation clean-room workspace
 under `docs/audio/cook/` (binary-derived structural spec + extracted
@@ -800,25 +807,36 @@ numeric facts tables + real-stream validation).
 
 ## Not yet implemented
 
-The real-decode half of the backend frame-decode now **drives the
+The real-decode half of the backend frame-decode **drives the
 frame-body orchestrator** ([`frame`](src/frame.rs)) on the real-decode
-gate: each sub-packet runs the statically-pinned §0–§3 prefix (the §1.1
+gate: each sub-packet runs the statically-pinned prefix (the §1.1
 gain-envelope segment count and the §2.1 subband → coefficient-range
-geometry) and stops precisely at the §3 spectral-VLC dequant step, whose
-seven Huffman codebooks' per-symbol code/length bytes are runtime-built
-in `.data` BSS at init and absent from the file image (§3.2) —
-surfacing the typed `Error::SpectralCodebookBytesUnavailable` (docs-gap
-#1775). The walk **stops at**, rather than guesses, that BSS blocker; the
-spectral entropy descent, the §4.3 coupling-coefficient values, and the
-§5 iMDCT kernel past it land once a dynamic-BSS-dump Validator round
-provides the populated tables. The observe half (gate bit `1`) is
-implemented: zeroed overlap-add output per validation/04 §4.3. The
-full-pipeline `Driver::decode_call` / `Driver::decode_call_with_flags`
-validate buffer sizes, run stages 1+2, then drive the orchestrator on
-the real-decode gate so consumers can wire the crate into a real
-container demuxer and treat the §3.2 blocker as the single documented
-gating value while the entropy + transform pipeline lands in later
-rounds. The `oxideav_core` registration glue and the cookie
+geometry) and stops precisely where the trace runs out — the
+**pre-spectral bitstream read layout**. The seven spectral codebooks
+were **recovered** and are now vendored + wired
+(`tables/spectral-codebook-{codes,code-lengths}.csv`,
+[`codebook`](src/codebook.rs) / [`spectral_decode`](src/spectral_decode.rs)),
+so given a per-band category list the §3 read runs end-to-end
+([`decode_spectrum`](src/frame_decode.rs)) through the §4 coupling split
+and §5 synthesis to PCM. What `spec/05` does **not** pin is how the frame
+head reaches that §3 read on a real stream: which recovered codebook the
+§1.2 gain-index / §2.2 quant-index VLC reads select, and how the
+category-assignment value array `v[]` is formed from the bitstream (the
+input the recovered [`category_assignment`](src/category_assignment.rs)
+loop consumes). The walk therefore **stops at** that read-layout gap,
+surfacing the typed `Error::SpectralCodebookBytesUnavailable` (the
+variant name kept for compatibility; it now denotes the read-layout gap,
+not a missing-bytes gap) rather than guessing. The observe half (gate
+bit `1`) is implemented: zeroed overlap-add output per validation/04
+§4.3. `Driver::decode_call` / `Driver::decode_call_with_flags` validate
+buffer sizes, run stages 1+2, then drive the orchestrator on the
+real-decode gate. Consumers that already hold the post-gain reader
+position and a category list run the whole §3→§5 chain via
+[`decode_frame_spectrum`](src/frame_decode.rs) /
+[`decode_frame_spectrum_assigned`](src/frame_decode.rs) (the latter
+computes the category list from `(values, budget, refinement_bound)` and
+routes mono/stereo in one call). The `oxideav_core` registration glue and
+the cookie
 layouts of the non-extended `0x01000001` / `0x01000002` mono/stereo
 siblings and the multichannel (`0x02000000`) backend family are also
 DOCS-GAPs — typed in `CookCookie::parse` so callers can triage
@@ -845,41 +863,38 @@ gain-envelope segment-count read, and the §2.1 subband-geometry build).
 The entire **post-entropy reconstruction arithmetic** — the §3.1 dequant
 band fill, the gap-free spectrum assembly over the §2.1 geometry, the §4.2
 stereo decouple, and their channel-routed integration into a `FrameSpectrum`
-iMDCT feed — is also wired in [`reconstruct`](src/reconstruct.rs) /
-[`frame`](src/frame.rs), consuming the entropy-decoded values as caller
-inputs so a future Validator round that dumps the BSS codebooks can feed
-them straight in. The **§5 synthesis back end past the iMDCT feed is now
-fully wired too** ([`imlt`](src/imlt.rs), [`synthesis`](src/synthesis.rs),
+iMDCT feed — is wired in [`reconstruct`](src/reconstruct.rs) /
+[`frame`](src/frame.rs). The **§5 synthesis back end past the iMDCT feed
+is fully wired** ([`imlt`](src/imlt.rs), [`synthesis`](src/synthesis.rs),
 [`pcm`](src/pcm.rs), [`assembler`](src/assembler.rs),
 [`backend`](src/backend.rs), `Driver::synthesized_call`): given the
 entropy-decoded spectra, the crate produces the per-call 16-bit PCM
-bytes at the validator-pinned cadence, so the §3.2 codebook bytes are
-now the **only** stage between a real packet and audible PCM.
+bytes at the validator-pinned cadence. The recovered runtime N=1024 MDCT
+window/twiddles and the §4.3 coupling rotation table are vendored and
+**cross-checked against their closed forms** (the twiddles are the MDCT
+rotation `(cos, sin)(π(k+¼)/1024)`, the long window is
+`(1/√512)·cos(πk/1024)`, and the coupling table is the quarter-turn sweep
+`cos(jπ/256)` / `sin(rπ/256)`), so the entire §3→§5 chain is assembled;
+the codebook bytes are no longer the blocker.
 
-**What is not yet wired** is the bit-level entropy descent
-past the §3 blocker (the step that *produces* those decoded values) and
-three **runtime-built-in-BSS** GAPs the trace explicitly
-leaves open (`docs/audio/cook/spec/05` §6): the per-symbol spectral
-codebook code/length **bytes** (§3.2, the precise sub-step the walk
-stops at as docs-gap #1775), the per-coupling-width rotation
-**coefficient values** (§4.3), and the iMDCT `0x8fcc` / `0xa1b0`
-rotation-table 2-D layouts (carried over from spec/01 §6). Each is
-addressed through a relocated `.data` BSS pointer not present in the file
-image, so it needs a dynamic-BSS-dump Validator/Extractor round before
-the entropy + transform walk can be wired bit-exactly. Until then the
-real-decode gate stops at the typed
-`Error::SpectralCodebookBytesUnavailable` blocker (the observe half —
-gate bit `1`, zeroed overlap-add output per validation/04 §4.3 — is
-implemented). Three further recorded gaps ride alongside: the
-**frame-length synthesis window** (`2 × samples_per_frame` taps; only
-the 3/7/15/31/64 rows are extracted — runtime-built like the
-codebooks), the **§1.1 negative-bias semantics** (12 of 144 real call
-heads carry a leading 6-bit field `< 6`, contradicting the
-`segment_count + 6` reading — see the real-data finding above), and
-the **`+0x20` carry-buffer mechanics** (where the four remaining frame
-bitstreams sit inside a call; the validated stream shows the 93-byte
-slot boundaries after slot 0 are not frame heads). The binary's iMDCT
-**normalisation/sign convention** is also unverifiable until entropy
-lands — the wired transform is the canonical TDAC-perfect-
-reconstruction closed form, with the caveat recorded in
-[`imlt`](src/imlt.rs).
+**What is not yet wired** is the frame's **pre-spectral bitstream read
+layout** — the step that positions the reader at the §3 data on a real
+stream and *produces* the decoded values. `spec/05` does not pin which
+recovered codebook the §1.2 gain-index / §2.2 quant-index VLC reads
+select, nor how the category-assignment value array `v[]` is formed from
+the bitstream; the real-decode gate stops there, typed as
+`Error::SpectralCodebookBytesUnavailable` (name kept for compatibility;
+it now denotes the read-layout gap, not a missing-bytes gap). The observe
+half (gate bit `1`, zeroed overlap-add output per validation/04 §4.3) is
+implemented. Further recorded gaps ride alongside: the iMDCT kernel's
+`0x8fcc`/`0xa1b0` rotation-table 2-D layout (spec/01 §6; the wired
+transform is the canonical TDAC-perfect-reconstruction closed form, its
+**normalisation/sign convention** unverifiable until the read layout
+lands — caveat in [`imlt`](src/imlt.rs)); the **frame-length synthesis
+window** (`2 × samples_per_frame` taps — only the 3/7/15/31/64 short rows
+and the N=1024 long row are recovered); the **§1.1 negative-bias
+semantics** (12 of 144 real call heads carry a leading 6-bit field `< 6`,
+contradicting the `segment_count + 6` reading — see the real-data finding
+above); and the **`+0x20` carry-buffer mechanics** (where the four
+remaining frame bitstreams sit inside a call; the validated stream shows
+the 93-byte slot boundaries after slot 0 are not frame heads).
