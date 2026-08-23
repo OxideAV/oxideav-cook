@@ -33,7 +33,7 @@
 //!
 //! No decoded PCM is produced: the real-decode pipeline drives the
 //! frame-body walk to the documented §3.2 BSS codebook blocker
-//! (`Error::SpectralCodebookBytesUnavailable`, docs-gap #1775). This
+//! (the §0.2 envelope/coupling tree gaps). This
 //! test validates the crate's *configuration* layer end-to-end against a
 //! real bitstream.
 

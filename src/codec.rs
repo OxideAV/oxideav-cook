@@ -9,26 +9,25 @@
 //!
 //! ## Decode status
 //!
-//! The Cook decode pipeline is assembled end-to-end — including the §2.2
-//! per-band **category-assignment loop** (`cook.dll!0x4800`), now
-//! recovered and wired as [`crate::category_assignment`] /
-//! [`crate::frame_decode::decode_spectrum_assigned`]. What blocks a
-//! **real** packet's decode to PCM is no longer the algorithm but the
-//! per-frame **inputs** to it: the assignment consumes a per-band value
-//! array `v[]`, a bit budget, and a refinement bound `M` that
-//! `provenance/08` records as **stack-resident and not captured** by the
-//! instrumented decode (the same reason a real frame's categories could
-//! not be read out), together with the still-unpinned §1.2 gain-segment
-//! record VLC and the §4.1 coupling-band boundary derivation.
-//! [`CookDecoder`] therefore parses and structurally validates each
-//! packet (the pinned §0–§2.1 frame-body prefix over the real bitstream)
-//! and surfaces the precise remaining blocker as a typed
+//! The Cook decode pipeline is assembled end-to-end around the round-9
+//! §0.2 wire order — the fixed-width frame head, the §2.2
+//! category-assignment loop (vendor-exact on the three traced real
+//! frames), the §3 entropy read, the §4.3 pan split and the
+//! recovered-window §5 synthesis ([`crate::frame::decode_frame_body`]).
+//! What blocks a **real** packet's decode to PCM is the field-5
+//! **envelope VLC tree family** (31 trees at `backend+0x44c8` carrying
+//! the per-band value array `v[]`) and the coupling-index VLC tree —
+//! neither is among the staged tables
+//! ([`crate::Error::EnvelopeValueTreeUnavailable`] /
+//! [`crate::Error::CouplingIndexTreeUnavailable`]). [`CookDecoder`]
+//! therefore parses and structurally validates each packet and surfaces
+//! the precise remaining gap as a typed
 //! [`oxideav_core::Error::Unsupported`] on [`Decoder::receive_frame`],
-//! rather than emitting fabricated audio. Every wired stage — the
-//! category-assignment routing, the entropy read, the expectation
-//! reconstruction, the recovered §4.3 coupling split, and the
-//! recovered-window §5 synthesis — is exercised by
-//! [`crate::frame_decode`] and `tests/entropy_to_pcm.rs`.
+//! rather than emitting fabricated audio. Every wired stage is
+//! exercised by [`crate::frame`] / [`crate::frame_decode`] and
+//! `tests/entropy_to_pcm.rs` / `tests/frame_walk_stream.rs` (frames
+//! with a captured envelope walk end-to-end through
+//! [`crate::frame::EnvelopeInjection`]).
 
 use oxideav_core::{
     CodecCapabilities, CodecId, CodecInfo, CodecParameters, CodecRegistry, CodecTag, Decoder,
@@ -116,10 +115,9 @@ impl Decoder for CookDecoder {
     fn send_packet(&mut self, packet: &Packet) -> CoreResult<()> {
         // Structurally validate the packet against the wired front end:
         // an empty packet is a container framing error; a non-empty one
-        // is a real coded frame the pipeline can parse up to the
-        // uncaptured per-frame category-assignment inputs. We do not
-        // buffer output because the entropy→PCM stage needs the (GAP)
-        // per-frame value array / budget the §2.2 loop consumes.
+        // is a real coded frame the §0.2 walk can parse up to the
+        // unstaged envelope/coupling VLC trees. We do not buffer output
+        // because the walk stops at those tree gaps on raw bytes.
         if packet.data.is_empty() {
             return Err(CoreError::invalid(
                 "oxideav-cook: empty packet (no coded Cook frame)",
@@ -130,15 +128,16 @@ impl Decoder for CookDecoder {
 
     fn receive_frame(&mut self) -> CoreResult<Frame> {
         Err(CoreError::unsupported(
-            "oxideav-cook: real-stream decode to PCM is blocked on the per-frame \
-             inputs to the §2.2 category-assignment loop (cook.dll!0x4800) — the \
-             loop itself is recovered and wired (oxideav_cook::category_assignment), \
-             but its per-band value array, bit budget and refinement bound are \
-             stack-resident and not captured by the instrumented decode, and the \
-             §1.2 gain-segment record VLC is still unpinned. Every wired stage \
-             (category-assignment routing, entropy read, expectation \
-             reconstruction, §4.3 coupling, recovered-window synthesis) is \
-             exercised; see oxideav_cook::frame_decode and tests/entropy_to_pcm.rs.",
+            "oxideav-cook: real-stream decode to PCM is blocked on the field-5 \
+             envelope VLC tree family (31 trees at backend+0x44c8 carrying the \
+             per-band value array) and the coupling-index VLC tree — neither is \
+             among the staged tables. Everything else in the frame walk is \
+             assembled and vendor-validated (the sec-0.2 head, the sec-2.2 \
+             allocator exact on three traced real frames, the entropy read, the \
+             sec-4.3 pan split, the recovered-window synthesis); frames with a \
+             captured envelope decode end-to-end via \
+             oxideav_cook::frame::EnvelopeInjection. See \
+             tests/frame_walk_stream.rs.",
         ))
     }
 
@@ -244,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn real_frame_parses_then_surfaces_the_category_gap() {
+    fn real_frame_parses_then_surfaces_the_envelope_tree_gap() {
         let mut dec = make_decoder(&params()).unwrap();
         let pkt = Packet {
             stream_index: 0,
@@ -257,12 +256,12 @@ mod tests {
         };
         // A non-empty packet is accepted (the pinned front end parses it)...
         dec.send_packet(&pkt).unwrap();
-        // ...but the real decode to PCM surfaces the §2.2 category GAP.
+        // ...but the real decode to PCM surfaces the envelope-tree gap.
         match dec.receive_frame() {
             Err(CoreError::Unsupported(msg)) => {
-                assert!(msg.contains("category-assignment"));
+                assert!(msg.contains("envelope VLC tree"));
             }
-            other => panic!("expected the category-assignment GAP, got {other:?}"),
+            other => panic!("expected the envelope-tree gap, got {other:?}"),
         }
         dec.flush().unwrap();
     }

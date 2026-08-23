@@ -77,6 +77,11 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `codec::CookDecoder::receive_frame`'s typed unsupported message (and
+  the registration-surface docs) now name the actual remaining gap —
+  the unstaged envelope / coupling-index VLC trees — instead of the
+  round-8 "stack-resident allocator inputs" narrative those captures
+  have since closed.
 - **The §1.1 "gain envelope" wire reading is withdrawn (round 9).** The
   head worker `cook.dll!0x4b50` performs one 6-bit read and `Nb − 1`
   VLC reads and nothing else, and the array it fills is the allocator's
