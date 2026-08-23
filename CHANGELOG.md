@@ -8,6 +8,13 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- README: full round-450 overhaul — status, the §0.2 walk, the stage-2
+  validation, the narrowed envelope/coupling tree gaps, the open
+  questions list, and a recorded caveat on the round-9 staged field
+  values (staged seeds vs stack-captured `v[0]`; no wire sub-packet
+  parses under the pinned layout with the staged values — the field
+  widths/order and the stack captures are unaffected).
+
 - **Multi-frame streaming test over the assembled walk**
   (`tests/frame_walk_stream.rs`): five synthetic 93-byte stereo frames
   in the traced packet-2 shape decode frame after frame through

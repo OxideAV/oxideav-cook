@@ -16,15 +16,21 @@ satisfy clean-room separation. The prior history is preserved on the
 
 The structural / table / per-call-orchestration layers are wired and
 validated against a real RealAudio Cook stream, and the **decode
-transform is assembled end-to-end**: the §3 spectral entropy read (over
-the recovered codebooks), the §2.2 category-assignment / bit-allocation
-loop, the §4 joint-stereo coupling split, and the §5 iMDCT / windowing /
-overlap-add all wire into audible 16-bit PCM. What is **not** yet pinned
-is the per-frame **pre-spectral bitstream read layout** that reaches the
-§3 data from the frame head on a real stream — which recovered codebook
-the §1.2 gain-index / §2.2 quant-index VLC reads select, and how the
-category-assignment value array `v[]` is formed — plus the iMDCT kernel's
-exact normalisation/sign convention (see "Not yet implemented").
+transform is assembled end-to-end** around the round-9 §0.2 wire order:
+the fixed-width frame head (sub-packet flag, coupling control, envelope
+seed), the §2.2 category-assignment / bit-allocation loop — now
+reproducing the vendor decoder's own categories **bit-exactly on all
+three traced real frames** (34/34 bands each) — the §3 spectral entropy
+read over the recovered codebooks, the §4 joint-stereo pan split over
+the round-10 `.rdata` pan tables, and the §5 windowing / overlap-add
+into audible 16-bit PCM. What still gates a raw-bytes real-stream
+decode: the **envelope VLC tree family** (the 31 trees at
+`backend+0x44c8` that carry the `Nb − 1` per-band envelope values) and
+the **coupling-index VLC tree** are not among the staged tables; the
+iMDCT kernel's exact block cadence / normalisation and the per-band
+`v[b]` → reconstruction-gain law are likewise open (see "Not yet
+implemented"). Frames whose envelope was captured live (three are
+staged) walk end-to-end through an injection API.
 
 The rebuild draws only from the strict-isolation clean-room workspace
 under `docs/audio/cook/` (binary-derived structural spec + extracted
@@ -37,24 +43,31 @@ numeric facts tables + real-stream validation).
   categories; they are **computed** in-decoder from a per-band value
   array `v[]` and the frame bit budget.
   [`category_assignment`](src/category_assignment.rs) is that loop, from
-  `docs/audio/cook/provenance/08-cook-category-assignment.md` +
-  `tables/category-assignment-params.csv`. The **base pass**
-  `cat[b] = clip((32 + off − v[b]) >> 1, 0, 7)` picks the global offset
-  so the total `0x8f38`-cost-LUT best matches the budget; the exact
-  landing is the documented `K = 32` under a strict slack (`refine one
-  category finer while total_cost + K < budget`), which reproduces the
-  reference decoder's own `cook.dll!0x4800` output across a fine budget
-  sweep and flat / non-flat / `Nb`-varied inputs (every test expectation
-  is the validator's output, captured by driving the opaque validator
-  binary — no decoder source read). The **Stage-2 ±1 refinement** is
-  wired for the validated uniform-under-budget regime (`refine_uniform`);
-  the non-flat priority interleave and over-budget reclaim order that
-  `provenance/08` records as only partially characterised are left
-  unrefined, not fabricated. [`decode_spectrum_assigned`](src/frame_decode.rs)
-  computes the per-band [`BandCategory`] list from `(values, budget,
-  refinement_bound)` and runs it straight through the codebook-by-category
-  §3 band decode — the bridge between the quantiser indices and the
-  spectral entropy read.
+  `docs/audio/cook/provenance/08-cook-category-assignment.md`,
+  `provenance/09` §3 (the live-frame captures) and
+  `tables/category-assignment-params.csv` / `live-frame-*.csv`. The
+  **base pass** `cat[b] = clip((32 + off − v[b]) >> 1, 0, 7)` picks the
+  global offset by the documented `K = 32` slack rule (`refine one
+  category finer while total_cost + K < budget`), reproducing the
+  vendor's own `cook.dll!0x4800` output across the provenance/08 budget
+  sweeps **and** landing on the traced `off = −3` for live packet 2.
+  The **Stage-2 refinement** is the round-9 parity-sweep walk
+  ([`refine_categories`](src/category_assignment.rs)): unit offset
+  steps below the base, per step the even-`t` class
+  (`t = K + off − v[b]`) moving one category finer in ascending band
+  order, one `M − 1` step per candidate, applying only while
+  `Σcost + Δ ≤ 2 × budget − 6` — the `0x8f38` cost LUT is denominated
+  in **half-bits** (the slack constant is fitted; its `{5, 6}` window
+  is recorded and pinned by a test). Validated against the vendor's own
+  real-frame output: all three traced frames reproduce **34/34
+  categories bit-exactly** (packets 16/17 stop mid-sweep, so this pins
+  the step rule, not just an offset), the landing totals are the
+  documented 1124/1130/1126 against `2 × budget`, and packet 2's five
+  sweep sizes and first two sweep memberships match `provenance/09` §3
+  exactly. [`decode_spectrum_assigned`](src/frame_decode.rs) computes
+  the per-band [`BandCategory`] list from `(values, budget,
+  refinement_bound)` and runs it straight through the
+  codebook-by-category §3 band decode.
 
 - **§3.2 spectral codebooks + the §3.1 VLC walk (docs-gap #1775 data
   recovered)** — the docs Extractor round 6 dumped the runtime-built-in-BSS
@@ -81,41 +94,53 @@ numeric facts tables + real-stream validation).
   runs a whole band, and [`natural_codebook_for`](src/spectral_decode.rs)
   confirms `radix^dim_lo` equals each codebook's symbol count
   `{196,100,49,625,256,243,32}` — the digits feed the existing
-  [`reconstruct_band`](src/reconstruct.rs) `values` input. The **level →
-  signed-value mapping, the per-band codebook selection, the gain-segment
-  and coupling-index VLC reads' codebook, the §4.3 coupling coefficients,
-  and the decode-time full-length (N=1024) window** remain recorded gaps
-  that gate a real-stream decode to PCM. Companion typed accessors landed
-  for the three sibling tables the same round recovered:
+  [`reconstruct_band`](src/reconstruct.rs) `values` input. Of the gaps
+  this bullet once listed, the level → signed-value mapping, the
+  codebook selection (the category), the §4.3 coupling coefficients and
+  the N = 1024 window are all since recovered/wired; the **envelope and
+  coupling-index VLC tree contents** remain the recorded gaps (see "Not
+  yet implemented"). Companion typed accessors:
   [`bit_alloc::category_bit_cost`](src/bit_alloc.rs) (the `0x8f38` §2.2
-  cost LUT), [`transform`](src/transform.rs) (the `0xa1b0` 74×5 iMDCT
-  rotation table, kernel use still a no-closed-form GAP), and
+  cost LUT — half-bits per band), [`transform`](src/transform.rs) (the
+  `0xa1b0` 74×5 iMDCT rotation table, kernel use still a
+  no-closed-form GAP), and
   [`mdct::window_builder_consts`](src/mdct.rs) (the `0x8c20`
   `{2.0,0.25,π,0.5}` runtime-window-builder inputs).
-- **Backend per-frame-body orchestrator** — [`frame`](src/frame.rs)
-  assembles the statically-pinned prefix of the §0 backend frame-body
-  stage order (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md`
-  §0–§3: gain control → category/quant → spectral VLC dequant) into a
-  single walk. [`decode_frame_body`](src/frame.rs) reads the §1.1
-  gain-envelope segment count from the [`FrameBitReader`](src/bitreader.rs),
-  builds the §2.1 [`SubbandGeometry`](src/subband.rs), then stops
-  **precisely** at the §3 spectral-VLC dequant step — whose seven Huffman
-  codebooks' per-symbol code/length bytes are runtime-built in `.data`
-  BSS at init and absent from the file image (§3.2) — surfacing the typed
-  `Error::SpectralCodebookBytesUnavailable` (docs-gap #1775) rather than
-  guessing the codebook contents. [`frame_body_prefix`](src/frame.rs)
-  returns the recovered [`FrameWalk`](src/frame.rs) (gain count, subband
-  geometry, total coded lines, bits consumed) up to the blocker.
+- **Backend per-frame-body orchestrator — the §0.2 wire walk** —
+  [`frame`](src/frame.rs) rebuilds the frame body around the wire order
+  round 9 pinned by behavioural trace
+  (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §0.2,
+  `tables/frame-read-layout.csv`): [`read_frame_head`](src/frame.rs)
+  consumes fields 1–4 — the 1-bit sub-packet flag, the coupling mode
+  flag, `Ncoupband` fixed-width coupling indices (the VLC branch
+  surfaces the typed `Error::CouplingIndexTreeUnavailable`), the 6-bit
+  envelope seed — and [`decode_frame_body`](src/frame.rs) continues
+  through the field-5 envelope values (the unstaged 31-entry VLC tree
+  family; a captured `v[]` + cursor resumes the walk through
+  [`EnvelopeInjection`](src/frame.rs) — three real frames' captures are
+  vendored), the 7-bit frame scalar, the §2.2 allocator with the
+  round-9 budget rule `budget = bit_limit − cursor`, the computed
+  categories, the §3 codebook-by-category spectral read over the
+  20-line band geometry, and the §4 pan split.
+  [`FrameLayout`](src/frame.rs) carries the traced per-flavor
+  parameters ([`validated_stereo`](src/frame.rs): `Nb = 34`,
+  `coupling_bits = 4`, `Ncoupband = 16`, `M = 128`;
+  [`for_flavor_geometry`](src/frame.rs) refuses untraced flavors) and
+  [`CouplingMap`](src/frame.rs) makes the unpinned §4.1 coupling band
+  range an explicit input (default hypothesis: start band 2, two
+  subbands per index — `2 + 16 × 2 = 34` fits every traced number;
+  flagged, not fact). Validated by a synthetic 93-byte stereo frame
+  shaped exactly like traced packet 2 (scalar at bits 172..179, budget
+  565, categories == the live capture, bit-exact total consumption) and
+  a five-frame streaming test into non-silent PCM
+  (`tests/frame_walk_stream.rs`).
   [`Driver::decode_call`](src/driver.rs) /
-  [`decode_call_with_flags`](src/driver.rs) now drive every sub-packet
-  through the orchestrator on the real-decode gate, replacing the opaque
-  `Error::NotImplemented` with the precise §3.2 blocker. The real first
-  packet of `FUN_RM_32.rm` carries a well-formed §1.1 gain header (top 6
-  bits = 29 → 23 segments), so the walk reaches the §3.2 blocker on real
-  data — pinned in `tests/driver_realstream.rs`. The §2.2 category-
-  *assignment* loop (`0x8f38` LUT, not extracted), the §3.2 codebook
-  bytes, the §4.3 coupling coefficients, and the §5 iMDCT kernel stay
-  recorded DOCS-GAPs past the blocker.
+  [`decode_call_with_flags`](src/driver.rs) drive every call through
+  the walk on the real-decode gate, surfacing the typed
+  `Error::EnvelopeValueTreeUnavailable` /
+  `Error::CouplingIndexTreeUnavailable` gaps (the retired
+  `SpectralCodebookBytesUnavailable` blocker's narrowed successors) —
+  pinned on the real packets in `tests/driver_realstream.rs`.
 - **Post-entropy spectral reconstruction → iMDCT input** —
   [`reconstruct`](src/reconstruct.rs) wires the trace's pinned dequant
   arithmetic *downstream* of the §3.2 entropy blocker (the codebook bytes
@@ -505,9 +530,8 @@ numeric facts tables + real-stream validation).
   tests pin the magnitude symmetry / bias collapse, the clip pass-through
   and top-cap per category, and the full closed form (closed-form match,
   `|q|` symmetry, small-magnitude floor-to-0, large-magnitude top clip,
-  divisor-identity). The `q`-supplying §3.1 VLC walk (whose codebook bytes
-  are a §3.2 BSS GAP), the `0x8fcc` category-expectation combine (audit
-  #17 GAP), and the feed into the inverse MDCT stay recorded DOCS-GAPs.
+  divisor-identity). The `0x8fcc` category-expectation combine (audit
+  #17 GAP) and the feed into the inverse MDCT stay recorded DOCS-GAPs.
 - **Per-buffer XOR descramble** — [`descramble`](src/descramble.rs) is
   the first byte-touching stage of the `RADecode` decode driver: a
   word-wise (32-bit, little-endian) XOR pass over the input, keyed by
@@ -608,8 +632,9 @@ numeric facts tables + real-stream validation).
   dequant LUT `{+1.0,-1.0}` at `0xa148` is
   [`SIGN_LUT`](src/spectral.rs) / [`sign_from_bit`](src/spectral.rs).
   The joint-stereo §4.2 reconstruction is the pinned mirror-index closed
-  form: [`coupling_table_len`](src/spectral.rs) is `Ncoup = 1 <<
-  coupling_bits`, [`mirror_partner_index`](src/spectral.rs) is the
+  form: [`coupling_table_len`](src/spectral.rs) is
+  `Ncoup = (1 << coupling_bits) − 1` (the round-9/10 table extents),
+  [`mirror_partner_index`](src/spectral.rs) is the
   `Ncoup-1-j` partner read (self-inverse; the centre index of an
   odd-length table is its own partner — the 45° pan point), and
   [`split_coupled_coefficient`](src/spectral.rs) reproduces
@@ -660,46 +685,29 @@ numeric facts tables + real-stream validation).
   decompose the running cursor the same way the binary maintains it
   incrementally). 13 unit tests pin MSB-first extraction, the cross-word
   straddle, the limit clamp, single-bit/multi-bit composition, and
-  cursor/word/position lockstep. Only the reader primitives are wired;
-  the frame body that drives them — the gain envelope (§1), the
-  category/quant walk (§2), the spectral VLC descent (§3, the bit-by-bit
-  walk `cook.dll!0x3a50` over the BSS-built codebooks of §3.2) and the
-  inverse transform (§5) — and the runtime-built BSS codebook / coupling
-  tables (§3.2 / §4.3) remain recorded DOCS-GAPs.
-- **Gain-control envelope (frame-syntax part 1)** —
-  [`gain`](src/gain.rs) wires the first frame-body stage the bit reader
-  feeds: the per-sub-packet gain envelope
-  (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §1,
-  `provenance/05` evidence #2 / #3). Two statically-pinned, non-GAP
-  primitives sit on top of [`FrameBitReader`](src/bitreader.rs) and the
-  existing [`scale`](src/scale.rs) ladder.
-  [`read_segment_count`](src/gain.rs) reads the leading 6-bit field
-  (`read-n-bits` with `n = 6`, the worker `cook.dll!0x4b50`'s `push 6`)
-  and applies the `−6` bias the worker forms (`count + 0xfffffffa`), so
-  the wire field carries `segment_count + 6`; a raw value `< 6` surfaces
-  the typed [`Error::GainSegmentCountUnderflow`](src/lib.rs).
-  [`gain_factor_for_index`](src/gain.rs) resolves a per-segment gain
-  index to `2^(index/2)` via the `0x93f8` `sqrt(2)` ladder indexed at its
-  centre (`1.0` at element 63 — the `0x94f4` positive-window sub-pointer
-  of evidence #3, `(0x94f4 − 0x93f8)/4 = 63`), with the
-  `{1.0, √2, 2.0, 2√2, 4.0}` positive window exposed as
-  [`GAIN_POS_WINDOW`](src/gain.rs). The **§1.2 application** is also
-  wired: [`GainSegment`](src/gain.rs) models a `(position, gain_index)`
-  event, [`expand_gain_envelope`](src/gain.rs) expands a segment set into
-  one factor per sub-block by the piecewise-constant hold-forward (unity
-  before the first segment, each segment's `2^(index/2)` factor held from
-  its position to the next), and [`apply_gain_blocks`](src/gain.rs) /
-  [`apply_gain_envelope`](src/gain.rs) multiply the per-sub-block profile
-  into the time-domain samples (the characteristic Cook **post-transform**
-  time-varying gain; a zero sub-block count surfaces the new
-  `Error::GainBlockCountZero`). 23 unit tests pin the count-bias
-  endpoints, the gain-index → factor resolution, and the §1.2
-  expansion/application (flat unity default, single/multi-segment hold,
-  position sorting, past-window inertness, sub-block scaling, the
-  non-dividing tail). The per-segment *record reads* themselves (position
-  + gain index, via the §3.2 BSS-gated VLC walk `cook.dll!0x3a50`) stay a
-  recorded DOCS-GAP — the application closed form is pinned, reading the
-  segment list off the bitstream is not.
+  cursor/word/position lockstep. The reader's context offsets follow the
+  round-9 correction (`+0x47ac..+0x47b8` — observed as the stores a
+  live `RADecode` makes); [`skip_bits`](src/bitreader.rs) supports the
+  envelope-injection walk. The frame body that drives the reader is the
+  §0.2 walk of [`frame`](src/frame.rs).
+- **Gain / scale DSP primitives (§1)** — [`gain`](src/gain.rs) keeps
+  the ladder resolution and profile primitives after the round-9
+  withdrawal of the old §1.1 wire reading (the head worker
+  `cook.dll!0x4b50` fills the allocator's `v[]`; there is no
+  segment-count field — this crate's own 12-of-144 real-stream
+  underflow finding foreshadowed exactly that).
+  [`gain_factor_for_index`](src/gain.rs) resolves a gain index to
+  `2^(index/2)` via the `0x93f8` `sqrt(2)` ladder indexed at its centre
+  (`1.0` at element 63 — the `0x94f4` positive-window sub-pointer of
+  evidence #3), with the `{1.0, √2, 2.0, 2√2, 4.0}` window exposed as
+  [`GAIN_POS_WINDOW`](src/gain.rs); [`GainSegment`](src/gain.rs) /
+  [`expand_gain_envelope`](src/gain.rs) /
+  [`apply_gain_blocks`](src/gain.rs) /
+  [`apply_gain_envelope`](src/gain.rs) keep the §1.2-shaped
+  piecewise-constant expansion + post-transform time-domain multiply as
+  caller-input DSP (no wire source for gain events is pinned; whether
+  this flavor carries a time-domain gain envelope at all is open,
+  spec/05 §1.2).
 - **Division-free quantiser-index decomposition (§2.2)** —
   [`index_decomp`](src/index_decomp.rs) wires the per-band dequant worker
   `cook.dll!0x44a0` reciprocal-multiply that decomposes a packed quantiser
@@ -727,20 +735,21 @@ numeric facts tables + real-stream validation).
   `provenance/05` evidence #12 / #13). The leading flag bit selects the
   per-band coupling-index read mode ([`read_coupling_mode`](src/coupling_control.rs)
   → [`CouplingReadMode`](src/coupling_control.rs)): **set** → VLC
-  (`cook.dll!0x3a50` over the §3.2 BSS codebooks, the recorded blocker),
+  (`cook.dll!0x3a50` over an unstaged coupling-index tree),
   **clear** → a fixed-width `read-n-bits(coupling_bits)` field with
   `n =` context `+0x1c`. The fixed-width branch
   ([`read_fixed_coupling_index`](src/coupling_control.rs)) is fully
   implemented from the [`FrameBitReader`](src/bitreader.rs) and yields one
-  rotation index `j` in `0..Ncoup` (`Ncoup = 1 << coupling_bits`), the
-  angle quantiser the §4.2 mirror split consumes;
+  rotation index `j` (the walk rejects the one value past the pan
+  table's `Ncoup = (1 << coupling_bits) − 1` entries — the traced
+  width-4 indices stay `0..=14`);
   [`read_coupling_index`](src/coupling_control.rs) surfaces
-  `Error::SpectralCodebookBytesUnavailable` for the VLC branch rather than
+  `Error::CouplingIndexTreeUnavailable` for the VLC branch rather than
   guessing. The context offsets `+0x1c` (coupling bit width) and `+0x18`
   (per-channel subband count, [`CTX_SUBBAND_COUNT_OFFSET`](src/coupling_control.rs))
   are surfaced as named constants. The **coupling-band boundary
-  derivation** (§4.1 gives no closed form) stays a recorded DOCS-GAP — the
-  caller supplies the contiguous coupling-band range.
+  derivation** (§4.1 gives no closed form) stays a recorded DOCS-GAP —
+  [`CouplingMap`](src/frame.rs) makes it an explicit input.
 - **Inverse-transform output stage (§5)** —
   [`output_stage`](src/output_stage.rs) wires the windowing + overlap-add
   that surrounds the iMDCT kernel
@@ -785,116 +794,78 @@ numeric facts tables + real-stream validation).
   three-frame backlog); [`SynthesisBackend`](src/backend.rs) +
   [`Driver::synthesized_call`](src/driver.rs) assemble it all into the
   **resume-from-blocker `RADecode` analog** — caller-supplied
-  post-entropy spectra (the §3.2 GAP input) in, per-call PCM out,
+  post-entropy spectra in, per-call PCM out,
   session cursor advanced. Pinned end-to-end in
   `tests/synthesis_realstream.rs`: the 144-real-packet silent-spectra
   walk is **byte-identical to the observe-gate output** call-by-call,
   and a mono hop-64 roundtrip reconstructs a source signal through the
-  full spectra → PCM-bytes path. The frame-length
-  (`2 × samples_per_frame`) synthesis window is not among the five
-  extracted rows and stays a caller-supplied GAP input.
-- **§1.1 real-data finding (recorded docs-gap)** — 12 of the validated
-  stream's 144 call heads carry a leading 6-bit field `< 6`, which
-  biases negative under the spec/05 §1.1 *"field = segment_count + 6"*
-  reading (packet 0 opens with the well-formed raw 29 → 23 segments,
-  but packets 4/5 open with raw 4); additionally packet 0's slot-1
-  boundary is not a well-formed frame head, consistent with the spec/01
-  §5 pin that the backend is invoked **once per call** with
-  carry-buffer consumption for the remaining sub-packets. Both pinned
-  by `tests/synthesis_realstream.rs`; `decode_call`'s real-decode gate
-  now walks the frame body once per call at the call head, and the
-  negative-bias semantics await a docs clarification.
+  full spectra → PCM-bytes path. The vendor's block cadence between a
+  frame's 680 coded lines and the recovered hop-512 window stays tied
+  to the recorded kernel GAP (see "Not yet implemented").
+- **Real call-head statistics fit the §0.2 flag reading** — the
+  12-of-144 negative-bias finding this crate recorded against the old
+  §1.1 reading is resolved by the round-9 layout: re-read under §0.2
+  the head bits are the 1-bit sub-packet flag (0 on 139 of 144 call
+  heads — the traced frames all carried 0) and the coupling mode flag
+  (the VLC branch on 107 of 144, matching the trace observing both
+  branches live). Pinned in `tests/synthesis_realstream.rs`, with the
+  historical 12-of-144 statistic kept as the pointer that foreshadowed
+  the withdrawal.
 
 ## Not yet implemented
 
-The real-decode half of the backend frame-decode **drives the
-frame-body orchestrator** ([`frame`](src/frame.rs)) on the real-decode
-gate: each sub-packet runs the statically-pinned prefix (the §1.1
-gain-envelope segment count and the §2.1 subband → coefficient-range
-geometry) and stops precisely where the trace runs out — the
-**pre-spectral bitstream read layout**. The seven spectral codebooks
-were **recovered** and are now vendored + wired
-(`tables/spectral-codebook-{codes,code-lengths}.csv`,
-[`codebook`](src/codebook.rs) / [`spectral_decode`](src/spectral_decode.rs)),
-so given a per-band category list the §3 read runs end-to-end
-([`decode_spectrum`](src/frame_decode.rs)) through the §4 coupling split
-and §5 synthesis to PCM. What `spec/05` does **not** pin is how the frame
-head reaches that §3 read on a real stream: which recovered codebook the
-§1.2 gain-index / §2.2 quant-index VLC reads select, and how the
-category-assignment value array `v[]` is formed from the bitstream (the
-input the recovered [`category_assignment`](src/category_assignment.rs)
-loop consumes). The walk therefore **stops at** that read-layout gap,
-surfacing the typed `Error::SpectralCodebookBytesUnavailable` (the
-variant name kept for compatibility; it now denotes the read-layout gap,
-not a missing-bytes gap) rather than guessing. The observe half (gate
-bit `1`) is implemented: zeroed overlap-add output per validation/04
-§4.3. `Driver::decode_call` / `Driver::decode_call_with_flags` validate
-buffer sizes, run stages 1+2, then drive the orchestrator on the
-real-decode gate. Consumers that already hold the post-gain reader
-position and a category list run the whole §3→§5 chain via
-[`decode_frame_spectrum`](src/frame_decode.rs) /
-[`decode_frame_spectrum_assigned`](src/frame_decode.rs) (the latter
-computes the category list from `(values, budget, refinement_bound)` and
-routes mono/stereo in one call). The `oxideav_core` registration glue and
-the cookie
-layouts of the non-extended `0x01000001` / `0x01000002` mono/stereo
-siblings and the multichannel (`0x02000000`) backend family are also
-DOCS-GAPs — typed in `CookCookie::parse` so callers can triage
-GAP-typed selectors separately from values the binary genuinely
-rejects. The numeric tables the decode path will consume are all
-vendored, validated, **and now individually reachable through typed,
-range-guarded accessors**, and the per-call orchestration that
-surrounds the transform is wired deterministically through `Driver`.
+The real-decode gate drives the assembled **§0.2 frame walk**
+([`frame`](src/frame.rs)) on every call: the fixed-width head (sub-packet
+flag, coupling control, envelope seed) parses on real packets, and the
+walk stops at the first of two **unstaged VLC tree families**:
 
-The round-5 backend frame-syntax trace
-(`docs/audio/cook/spec/05-cook-backend-frame-syntax.md`) pins the
-**wire-format structure** of the transform — the MSB-first bit reader
-(§0.1), the gain envelope's `read6 → count − 6` segment layout and its
-`sqrt(2)^index` gain ladder (§1), the category/quant walk and its five
-per-category tables + quantiser closed form (§2), the seven spectral
-codebook dimensions + sign/scale LUTs (§3.1), and the joint-stereo
-mirror-index rotation closed form (§4.2). The statically-pinned pieces of
-that surface — the per-category vector dimensions, the seven codebook
-symbol counts, the sign LUT, and the §4.2 mirror-index rotation — are now
-wired in [`spectral`](src/spectral.rs), and the §0–§3 prefix is now
-**assembled into the running real-decode walk** by
-[`frame`](src/frame.rs) (the bit-reader state machine, the
-gain-envelope segment-count read, and the §2.1 subband-geometry build).
-The entire **post-entropy reconstruction arithmetic** — the §3.1 dequant
-band fill, the gap-free spectrum assembly over the §2.1 geometry, the §4.2
-stereo decouple, and their channel-routed integration into a `FrameSpectrum`
-iMDCT feed — is wired in [`reconstruct`](src/reconstruct.rs) /
-[`frame`](src/frame.rs). The **§5 synthesis back end past the iMDCT feed
-is fully wired** ([`imlt`](src/imlt.rs), [`synthesis`](src/synthesis.rs),
-[`pcm`](src/pcm.rs), [`assembler`](src/assembler.rs),
-[`backend`](src/backend.rs), `Driver::synthesized_call`): given the
-entropy-decoded spectra, the crate produces the per-call 16-bit PCM
-bytes at the validator-pinned cadence. The recovered runtime N=1024 MDCT
-window/twiddles and the §4.3 coupling rotation table are vendored and
-**cross-checked against their closed forms** (the twiddles are the MDCT
-rotation `(cos, sin)(π(k+¼)/1024)`, the long window is
-`(1/√512)·cos(πk/1024)`, and the coupling table is the quarter-turn sweep
-`cos(jπ/256)` / `sin(rπ/256)`), so the entire §3→§5 chain is assembled;
-the codebook bytes are no longer the blocker.
+- the **envelope value trees** — field 5's `Nb − 1` per-band values are
+  read through a separate 31-entry tree family at `backend+0x44c8`
+  (tree `max(0, k − 3)` for symbol `k`; spec/05 §1.1) whose per-symbol
+  code/length contents are not among the staged tables
+  (`Error::EnvelopeValueTreeUnavailable`);
+- the **coupling-index tree** — field 3's VLC branch (mode flag `1`,
+  taken by 107 of the validated stream's 144 call heads)
+  (`Error::CouplingIndexTreeUnavailable`).
 
-**What is not yet wired** is the frame's **pre-spectral bitstream read
-layout** — the step that positions the reader at the §3 data on a real
-stream and *produces* the decoded values. `spec/05` does not pin which
-recovered codebook the §1.2 gain-index / §2.2 quant-index VLC reads
-select, nor how the category-assignment value array `v[]` is formed from
-the bitstream; the real-decode gate stops there, typed as
-`Error::SpectralCodebookBytesUnavailable` (name kept for compatibility;
-it now denotes the read-layout gap, not a missing-bytes gap). The observe
-half (gate bit `1`, zeroed overlap-add output per validation/04 §4.3) is
-implemented. Further recorded gaps ride alongside: the iMDCT kernel's
-`0x8fcc`/`0xa1b0` rotation-table 2-D layout (spec/01 §6; the wired
-transform is the canonical TDAC-perfect-reconstruction closed form, its
-**normalisation/sign convention** unverifiable until the read layout
-lands — caveat in [`imlt`](src/imlt.rs)); the **frame-length synthesis
-window** (`2 × samples_per_frame` taps — only the 3/7/15/31/64 short rows
-and the N=1024 long row are recovered); the **§1.1 negative-bias
-semantics** (12 of 144 real call heads carry a leading 6-bit field `< 6`,
-contradicting the `segment_count + 6` reading — see the real-data finding
-above); and the **`+0x20` carry-buffer mechanics** (where the four
-remaining frame bitstreams sit inside a call; the validated stream shows
-the 93-byte slot boundaries after slot 0 are not frame heads).
+Both are data gaps of exactly the kind the docs Extractor's runtime
+dumps have closed before (the seven spectral codebooks came back the
+same way). Frames whose envelope was captured live resume through
+[`EnvelopeInjection`](src/frame.rs) — the three staged captures walk
+end-to-end — and everything downstream of field 5 is assembled: scalar,
+budget rule, allocator (vendor-exact on the live frames), spectral read,
+pan split, synthesis to PCM.
+
+Recorded open questions that ride alongside (typed as caller inputs, not
+guessed): the **per-band reconstruction gain law** (how `v[b]` maps to
+the §1–§2 "per-band gain" the dequant applies — `band_gains` is a
+caller input); the **§4.1 coupling band range** (which subbands each
+coupling index covers — [`CouplingMap`](src/frame.rs), with the
+`2 + 16 × 2 = 34` hypothesis flagged) and the **uncoupled low bands'
+stereo routing**; the **iMDCT kernel** (`cook.dll!0x5b70` + the `0xa1b0`
+rotation table, no validated closed form) and its **block cadence**
+between a frame's 680 coded lines and the recovered hop-512 window —
+the wired transform is the canonical TDAC closed form with a documented
+normalisation caveat; the **1-bit sub-packet flag and 7-bit frame
+scalar semantics** (positions pinned, meaning open); the **wire ↔
+frame-buffer correspondence** for the traced frames (see the caveat
+below); the **`+0x20` carry-buffer mechanics** (where the four
+remaining frame bitstreams sit inside a 465-byte call); and the
+`oxideav_core` registration glue plus the non-extended
+(`0x01000001`/`0x01000002`) and multichannel (`0x02000000`) cookie
+layouts (typed in `CookCookie::parse`).
+
+### A recorded caveat on the staged field values
+
+The round-9 extractor re-derived the traced frames' field *values*
+(envelope seed 17/55/27, frame scalar 109/89/103, coupling indices)
+from a decoder-memory frame-buffer dump at the recorded bit offsets.
+Two observations this crate made while consuming the staging suggest
+that derivation needs re-verification: the staged seed values differ
+from the stack-captured `v[0]` (17 vs 25, 55 vs 29, 27 vs 28) with no
+pinned transform between them, and no 93-byte sub-packet of the wire
+stream parses under the pinned layout with the staged values (nor does
+any wire alignment reproduce the staged spectral consumption under the
+recovered codebooks). The field *widths and order* (bit-cursor deltas)
+and the stack-captured `v[]`/`cat[]`/budgets are unaffected — the
+category-assignment validation rests only on those.
