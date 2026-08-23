@@ -270,8 +270,8 @@ numeric facts tables + real-stream validation).
   the eight remaining extracted numeric tables (two 127-entry
   power-of-two ladders, per-category gain-step / gain-bias / level-count
   triples, an 11-entry reciprocal table, a 51-entry monotone
-  category-index LUT, and the five Princen-Bradley MDCT half-windows
-  of lengths 3 / 7 / 15 / 31 / 64). Each loader is `OnceLock`-cached
+  category-index LUT, and the five per-coupling-width §4.3 pan tables
+  of lengths 3 / 7 / 15 / 31 / 63). Each loader is `OnceLock`-cached
   and self-validates against the constraint stated in the matching
   `.meta` provenance (e.g. f32-exact equality with `2^k`, TDAC identity
   to better than 1e-3).
@@ -522,29 +522,30 @@ numeric facts tables + real-stream validation).
   `tests/descramble_realstream.rs`. The trailing partial word
   (`len % 4 != 0`) is copied verbatim — a recorded tail-handling
   DOCS-GAP.
-- **Typed MDCT half-window accessors** — [`mdct`](src/mdct.rs) keys
-  the five vendored Princen-Bradley half-windows (`cook.dll!0x8d0c`,
-  lengths 3 / 7 / 15 / 31 / 64 — the windowing / overlap-add side of
-  the inverse-MDCT stage spec/01 §5.1 inventories) behind the typed
-  [`MdctWindowLength`](src/mdct.rs) selector: only the five stored
-  lengths are constructible ([`MdctWindowLength::from_len`](src/mdct.rs)
-  raises the typed `Error::MdctWindowLengthUnsupported` otherwise), and
-  [`mdct_half_window`](src/mdct.rs) is the length-keyed lookup over the
-  vendored rows. Per-row positioning is derived, never retyped:
-  [`element_offset`](src/mdct.rs) sums the preceding row lengths
-  (row starts 0 / 3 / 10 / 25 / 56) and [`rva`](src/mdct.rs) is pure
-  RVA arithmetic from the `.meta` table head, with the audit-#14
-  boundary facts (`docs/audio/cook/provenance/03-cook-audit.md`:
-  *"cat-lut ends exactly at window table `0x8d0c`; windows end at
-  `0x8eec`"*) pinned by tests through the derived
-  [`MDCT_WINDOW_TABLE_END_RVA`](src/mdct.rs) constant.
-  [`tdac_pinned`](src/mdct.rs) reports exactly which rows the `.meta`
-  validation note covers with the Princen-Bradley TDAC identity
-  (3 / 7 / 15 / 31 — the 64-row is not covered by that sentence and
-  deliberately reports `false`). The long/short adaptive switching
-  that selects a window at runtime and the inverse-MDCT kernel itself
-  (the `0xa1b0` rotation table, audit #16: no validated closed form)
-  remain GAPs — only the typed window-table access is wired.
+- **§4.3 per-coupling-width pan-coefficient tables (round-10
+  relabel)** — the five short `.rdata` tables at `cook.dll!0x8d0c`
+  this crate once keyed as "MDCT half-windows" are, per
+  `docs/audio/cook/provenance/10-cook-coupling-pan-label.md`, the
+  joint-stereo **pan-coefficient** tables of spec/05 §4.3: one per
+  coupling width `w = 2..=6`, each of length `(1 << w) − 1` (extents
+  read from the `0x8ee8` dispatch pointer array, which the five tables
+  end exactly at), all 119 values satisfying the constant-power identity
+  `t[j]² + t[n−1−j]² = 1` to `< 1e-6`, every row strictly decreasing
+  with `1/√2` at its centre. The range has exactly one consumer in the
+  image — the §4.2 stereo split at `cook.dll!0x3e96` — and the round-9
+  ablation moved 3060/4096 PCM bytes by zero-filling the
+  `coupling_bits`-selected row while the other four were bit-inert.
+  [`coupling::CouplingPanWidth`](src/coupling.rs)
+  ([`from_bits`](src/coupling.rs) over the per-flavor `coupling_bits`,
+  [`table_len`](src/coupling.rs) `= (1 << w) − 1`,
+  [`rva`](src/coupling.rs) derived from the table head),
+  [`coupling_pan_table`](src/coupling.rs),
+  [`coupling_pan_pair`](src/coupling.rs) `(t[j], t[Ncoup−1−j])` and
+  [`split_coupled_recovered`](src/coupling.rs) wire the §4.2 split over
+  the vendored `tables/coupling-pan-coeffs.csv`; the old window-role
+  API and the superseded de-permuted 512-entry "§4.3 table" built from
+  the round-8 init rotation buffers are removed (those two buffers stay
+  vendored as recovered facts whose consuming stage is unpinned).
 - **Typed reciprocal-divisor accessors** — [`reciprocal`](src/reciprocal.rs)
   types the 11-entry averaging-divisor table (`cook.dll!0xa7a8`,
   `tables/reciprocal-1-over-n.meta`; spec/01 §6 row `0xa7a8`; audit
@@ -744,9 +745,9 @@ numeric facts tables + real-stream validation).
   §5.1, `provenance/05` evidence #14).
   [`apply_window`](src/output_stage.rs) /
   [`windowed`](src/output_stage.rs) multiply a time-domain block
-  point-wise by the stored Princen-Bradley window
-  ([`mdct_half_window`](src/mdct.rs), whose `w[k]² + w[N-1-k]² = 1` TDAC
-  identity the `mdct-windows.meta` validates);
+  point-wise by the apodisation window (a caller-supplied slice — the
+  runtime-built window, [`long_full_window_unit`](src/mdct.rs) for the
+  recovered N = 1024 flavour);
   [`overlap_add`](src/output_stage.rs) sums two equal-length windowed
   contributions and [`overlap_add_weighted`](src/output_stage.rs) applies
   the L/R combine mix weights `0.5`
@@ -757,22 +758,18 @@ numeric facts tables + real-stream validation).
   gain-scale) in the binary's order. The **iMDCT kernel itself**
   (`cook.dll!0x5b70`, the `0xa1b0` rotation table with no validated closed
   form — audit #16) stays the recorded GAP and is a caller input; the
-  long/short window selection and per-flavor weight routing also stay
-  GAPs. New typed errors `Error::OutputWindowLengthMismatch` /
-  `Error::OverlapAddLengthMismatch`.
+  per-flavor weight routing also stays a GAP. Typed errors
+  `Error::OutputWindowLengthMismatch` / `Error::OverlapAddLengthMismatch`.
 - **§5 MLT/IMLT synthesis back end (spectra → PCM bytes)** — the entire
   post-entropy half of the backend frame decode is now assembled,
   milestone by milestone.
-  [`mdct_full_window`](src/mdct.rs) mirror-completes each stored
-  monotone-decreasing half-window into its full `2L`-tap symmetric
-  Princen-Bradley window (the hop-TDAC identity `W[k]² + W[k+L]² = 1`
-  follows from the pinned in-row identity — values bit-identical, only
-  re-ordered). [`imlt_direct`](src/imlt.rs) / [`mlt_direct`](src/imlt.rs)
+  [`imlt_direct`](src/imlt.rs) / [`mlt_direct`](src/imlt.rs)
   wire the definition-level inverse/forward MLT the stage is pinned *as*
   (spec/01 §5.1 *"inverse MDCT"*): the TDAC alias symmetry, linearity,
   the tight-frame composition `MLT∘IMLT = 2·id`, and windowed
-  overlap-add **perfect reconstruction** over the stored 3/7/15/31
-  windows are pinned by tests (the binary's fast kernel — `0x5b70` +
+  overlap-add **perfect reconstruction** across several hop sizes
+  (exact-TDAC test windows) and the recovered N = 1024 window are
+  pinned by tests (the binary's fast kernel — `0x5b70` +
   `0xa1b0`, audit #16 — stays the recorded GAP; the
   normalisation-convention caveat is documented, unverifiable until the
   §3.2 entropy GAP lands). [`Synthesizer`](src/synthesis.rs) is the

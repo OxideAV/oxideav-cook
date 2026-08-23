@@ -1,0 +1,10 @@
+order,field,width_bits,reader,call_site_rva,repeat,semantics
+1,subpacket_flag,1,read-1-bit 0x3fc0,0x31b0,1,"single bit read by the sub-packet driver before the frame body; 0 in every traced frame"
+2,coupling_vlc_flag,1,read-1-bit 0x3fc0,0x3d34,1,"coupling-control mode: 0 = fixed-width coupling indices, 1 = VLC-coded coupling indices"
+3a,coupling_index_fixed,coupling_bits,read-n-bits 0x3f40,0x3d93,Ncoupband,"taken when coupling_vlc_flag == 0; coupling_bits == 4 and Ncoupband == 16 for the traced flavor"
+3b,coupling_index_vlc,VLC,VLC walk 0x3a50,0x3d5d,Ncoupband,"taken when coupling_vlc_flag == 1; same count"
+4,envelope_seed,6,read-n-bits 0x3f40,0x4b5e,1,"absolute seed of the per-band envelope value array v[0]"
+5,envelope_value,VLC,VLC walk 0x3a50,0x4bac,Nb-1,"v[1..Nb-1]; symbol k uses envelope VLC tree index max(0,k-3) from the 31-entry tree array at backend+0x44c8"
+6,frame_scalar_7,7,read-n-bits 0x3f40,0x3c97,1,"7-bit field read by the frame body between the envelope array and the bit-allocation call; semantics NOT established"
+7,--,0,--,0x3cd4,1,"bit-allocation call 0x4800(v[], budget, out cat[], out idx[]) - consumes no bits; budget == bit_limit - bit_cursor"
+8,spectral,VLC+signs,VLC walk 0x3a50 / read-1-bit 0x3fc0,0x4517 / 0x4585,per band,"spectral stage: per-band vector VLC symbols from the 7 per-category trees at backend+0x4594 plus out-of-band sign bits"

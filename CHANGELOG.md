@@ -8,6 +8,57 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Round-9/10 docs consumption — the `0x8d0c` tables are the §4.3
+  joint-stereo pan coefficients, not MDCT windows.** The docs
+  workspace's round 10 (`provenance/10-cook-coupling-pan-label.md`)
+  withdrew the "five Princen-Bradley window prototypes" label this crate
+  vendored as `tables/mdct-windows.csv`: the range has exactly one
+  consumer in the image (the §4.2 stereo split at `cook.dll!0x3e96`),
+  the round-9 ablation shows zero-filling the `coupling_bits`-selected
+  row moves 3060/4096 PCM bytes of a real frame while the other four are
+  bit-inert, and the row extents read from the `0x8ee8` dispatch array
+  are `(1 << w) - 1` for `w = 2..=6` (the old 64-row carried one
+  spurious trailing `0.0`). Vendored as `tables/coupling-pan-coeffs.csv`
+  (119 f32; loader `tables::coupling_pan_coeffs`, constant-power
+  identity validated to `< 1e-6` on all 119 values), exposed through
+  the new `coupling::CouplingPanWidth` selector (`from_bits`, `bits`,
+  `table_len = (1 << w) - 1`, `rva`), `coupling_pan_table(width)`,
+  `coupling_pan_pair(width, j)` and `split_coupled_recovered(c, width,
+  j)`; `reconstruct::decouple_stereo_recovered` and
+  `frame_decode::FrameCoupling` (new `pan_width` field) now select the
+  §4.3 table by the stream's coupling width. New typed
+  `Error::CouplingPanWidthUnsupported`.
+  - **Removed** the window-role API built on the withdrawn label:
+    `mdct::MdctWindowLength`, `mdct_half_window`, `mdct_full_window`,
+    `MDCT_WINDOW_COUNT` / `MDCT_WINDOW_TABLE_RVA` /
+    `MDCT_WINDOW_TABLE_END_RVA`, `tables::mdct_windows` /
+    `MDCT_WINDOWS_TOTAL_LEN` / `MDCT_WINDOW_ROW_LENS`,
+    `Synthesizer::from_stored`, and `Error::MdctWindowLengthUnsupported`.
+    `output_stage::apply_window` / `windowed` / `window_and_gain` take
+    the apodisation window as a `&[f32]` slice (the runtime-built
+    window — `mdct::long_full_window_unit` for N = 1024).
+  - **Removed** the superseded "§4.3 recovered rotation table" API
+    (`coupling_coefficient_table`, `coupling_coefficient`,
+    `COUPLING_RECOVERED_BITS/LEN`) that de-permuted the round-8
+    init-built 256-pair rotation buffer through its bit-reversal index
+    as the pan table. Those two tables stay vendored
+    (`tables::coupling_rotation_coeffs` / `coupling_index_permutation`)
+    as recovered numeric facts whose consuming stage is unpinned; their
+    quarter-turn `cos/sin` structure is still pinned by a test.
+- Vendored the round-9 observation tables: `tables/frame-read-layout.csv`
+  (the §0.2 pre-spectral wire field order; loader
+  `tables::frame_read_layout`), `tables/live-frame-params.csv` (the
+  three traced real frames' scalars — bit limit 744, bits consumed,
+  envelope seed, 7-bit scalar, coupling flag, `Nb = 34`, budget,
+  `M = 128`, `idx_list_len = 127`; loader `tables::live_frame_params`)
+  and `tables/live-frame-allocator-io.csv` (the real 34-band `v[]` /
+  `cat[]` allocator I/O of those frames; loader
+  `tables::live_frame_allocator_io`), plus the refreshed
+  `tables/category-assignment-params.csv` (19 rows: the round-9
+  live-frame identities added — `budget = bit_limit − bit_cursor`,
+  `Nb = 34`, `M = 128`, `len(idx[]) = M − 1`; the two symbolic rows are
+  carried as `tables::CategoryAssignmentParam::Symbolic`).
+
 - **Corrected the stale frame-body blocker narrative.** The §3.2
   spectral codebook code/length bytes — once the file-image GAP the
   `SpectralCodebookBytesUnavailable` variant was named for — were

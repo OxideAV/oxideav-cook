@@ -19,7 +19,10 @@
 //! | [`category_level_count`]   |   7 | per-category quantiser level-count clip bound `{13,9,6,4,3,2,1}` |
 //! | [`reciprocal_1_over_n`]    |  11 | `1/n`, n=1..9, then 1/20 and 0 — averaging divisors |
 //! | [`category_index_lut`]     |  51 | monotone 0..19 category / quantiser-index LUT |
-//! | [`mdct_windows`]           | 120 | five Princen-Bradley half-windows, lengths 3,7,15,31,64 |
+//! | [`coupling_pan_coeffs`]    | 119 | five per-coupling-width §4.3 pan tables, lengths `(1<<w)-1`, `w=2..=6` |
+//! | [`frame_read_layout`]      | 9 | observed §0.2 pre-spectral wire field order (widths, reader, call site) |
+//! | [`live_frame_params`]      | 3×10 | observed per-frame scalars of three traced real frames |
+//! | [`live_frame_allocator_io`] | 3×34 | observed real per-band `v[]` / `cat[]` allocator I/O |
 //! | [`spectral_codebook_codes`] | 7 rows | per-symbol Huffman codes for the seven spectral VLC codebooks (BSS-recovered, §3.2) |
 //! | [`spectral_codebook_code_lengths`] | 7 rows | per-symbol code lengths, pairs with the codes |
 //! | [`category_cost_lut`]      |   7 | per-category expected bit-cost `{52,47,43,37,29,22,16}` (§2.2) |
@@ -34,7 +37,7 @@
 //! | [`spectral_dequant_scale`] |   8 | dequant magnitude-scale LUT (non-zero idx 5/6/7 = `2^-2.5/2^-2/2^-0.5`) |
 //! | [`sign_lut`]               |   2 | spectral sign LUT `{+1, -1}` |
 //! | [`category_expectation`]   |  98 | level → reconstructed-magnitude table (7 rows × stride 14) |
-//! | [`category_assignment_params`] | 14 | named §2.2 category-assignment algorithm constants (`cook.dll!0x4800`) |
+//! | [`category_assignment_params`] | 19 | named §2.2 category-assignment algorithm constants + live-frame rows (`cook.dll!0x4800`) |
 //!
 //! Each loader caches its parse via [`std::sync::OnceLock`] so the CSV
 //! is split once per process. Lengths are advertised by the constants
@@ -51,7 +54,10 @@ const GAIN_BIAS_CSV: &str = include_str!("../tables/gain-bias-ramp.csv");
 const CATEGORY_LEVEL_COUNT_CSV: &str = include_str!("../tables/category-level-count.csv");
 const RECIPROCAL_CSV: &str = include_str!("../tables/reciprocal-1-over-n.csv");
 const CATEGORY_INDEX_LUT_CSV: &str = include_str!("../tables/category-index-lut.csv");
-const MDCT_WINDOWS_CSV: &str = include_str!("../tables/mdct-windows.csv");
+const COUPLING_PAN_COEFFS_CSV: &str = include_str!("../tables/coupling-pan-coeffs.csv");
+const FRAME_READ_LAYOUT_CSV: &str = include_str!("../tables/frame-read-layout.csv");
+const LIVE_FRAME_PARAMS_CSV: &str = include_str!("../tables/live-frame-params.csv");
+const LIVE_FRAME_ALLOCATOR_IO_CSV: &str = include_str!("../tables/live-frame-allocator-io.csv");
 const CATEGORY_VECTOR_DIM_LO_CSV: &str = include_str!("../tables/category-vector-dim-lo.csv");
 const CATEGORY_VECTOR_DIM_HI_CSV: &str = include_str!("../tables/category-vector-dim-hi.csv");
 const SPECTRAL_CODEBOOK_DIMS_CSV: &str = include_str!("../tables/spectral-codebook-dims.csv");
@@ -105,12 +111,16 @@ pub const RECIPROCAL_LEN: usize = 11;
 /// `category-index-lut.meta`).
 pub const CATEGORY_INDEX_LUT_LEN: usize = 51;
 
-/// `mdct_windows` total element count — 120 f32 across five rows of
-/// lengths 3, 7, 15, 31, 64 (`tables/mdct-windows.meta`).
-pub const MDCT_WINDOWS_TOTAL_LEN: usize = 120;
+/// `coupling_pan_coeffs` total element count — 119 f32 across five rows
+/// of lengths 3, 7, 15, 31, 63 (`tables/coupling-pan-coeffs.meta`; the
+/// row extents are read from the `0x8ee8` dispatch pointer array by the
+/// extractor, each `(1 << w) - 1` for coupling width `w = 2..=6`).
+pub const COUPLING_PAN_TOTAL_LEN: usize = 119;
 
-/// Per-row lengths of the five MDCT half-windows.
-pub const MDCT_WINDOW_ROW_LENS: [usize; 5] = [3, 7, 15, 31, 64];
+/// Per-row lengths of the five per-coupling-width pan-coefficient
+/// tables — `(1 << w) - 1` for `w = 2..=6`
+/// (`tables/coupling-pan-coeffs.meta`).
+pub const COUPLING_PAN_ROW_LENS: [usize; 5] = [3, 7, 15, 31, 63];
 
 /// `category_vector_dim_lo` length — 7 u32 (`spec/05 §2.2` /
 /// `tables/category-vector-dim-lo.meta`, `element_count: 7`).
@@ -183,13 +193,13 @@ pub const SIGN_LUT_LEN: usize = 2;
 /// `0x8fc8..0x9150`).
 pub const CATEGORY_EXPECTATION_LEN: usize = 98;
 
-/// `category_assignment_params` data-row count — the 14 named scalar
+/// `category_assignment_params` data-row count — the 19 named scalar
 /// constants of the §2.2 category-assignment algorithm
 /// (`tables/category-assignment-params.csv`, algorithm
 /// `cook.dll!0x4800`): base `K`, offset start, six bisection steps,
 /// divisor, the two clip bounds, the cost-LUT RVA, the category-7 cost,
 /// and the refinement-bound context-field offset.
-pub const CATEGORY_ASSIGNMENT_PARAMS_ROWS: usize = 14;
+pub const CATEGORY_ASSIGNMENT_PARAMS_ROWS: usize = 19;
 
 /// Row stride of the `category_expectation` table — 14 f32 per
 /// category row (= the largest per-category level range,
@@ -866,26 +876,39 @@ pub fn category_expectation() -> &'static [f32] {
     })
 }
 
-/// Five concatenated MDCT analysis/synthesis half-windows
-/// (`tables/mdct-windows.csv`).
+/// Five per-coupling-width joint-stereo pan-coefficient tables
+/// (`tables/coupling-pan-coeffs.csv`, RVA `0x8d0c`, spec/05 §4.3).
 ///
-/// Returns five `&[f32]` slices of lengths 3, 7, 15, 31, 64
-/// (= 120 f32 total). Each window is monotone-decreasing with
-/// `1/sqrt2` at its midpoint, and the four shorter windows satisfy
-/// the Princen-Bradley TDAC identity `w[k]^2 + w[N-1-k]^2 = 1` to
-/// better than 1e-3 — they are perfect-reconstruction MDCT windows.
-pub fn mdct_windows() -> [&'static [f32]; 5] {
+/// Returns five `&[f32]` slices of lengths 3, 7, 15, 31, 63 — one per
+/// coupling width `w = 2..=6`, each of length `(1 << w) - 1`, selected
+/// at decode through the dispatch pointer array at `0x8ee8` and read as
+/// the mirror-index pair `(t[j], t[n-1-j])` of the §4.2 stereo split.
+///
+/// The loader self-validates the `.meta` invariants: each row is
+/// monotone-decreasing with `1/sqrt2` at its centre, and **all 119**
+/// values satisfy the constant-power identity
+/// `t[j]^2 + t[n-1-j]^2 = 1` to better than `1e-6`.
+///
+/// This byte range was previously staged as `mdct-windows` (*"five
+/// Princen-Bradley window prototypes"*). That label is **withdrawn**:
+/// the range has exactly one consumer in the image — the §4.2 stereo
+/// split at `cook.dll!0x3e96` — and zero-filling the
+/// `coupling_bits`-selected row moves 3060/4096 PCM bytes while the
+/// other four rows are bit-inert (the round-9 ablation). The MDCT
+/// apodisation window is a different, runtime-built object
+/// ([`mdct_window_1024`]).
+pub fn coupling_pan_coeffs() -> [&'static [f32]; 5] {
     static T: OnceLock<[Vec<f32>; 5]> = OnceLock::new();
     let rows = T.get_or_init(|| {
         let mut out: [Vec<f32>; 5] = Default::default();
         let mut row_idx = 0usize;
-        for line in MDCT_WINDOWS_CSV.lines() {
+        for line in COUPLING_PAN_COEFFS_CSV.lines() {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
-            assert!(row_idx < 5, "mdct-windows.csv has more than 5 rows");
-            let want = MDCT_WINDOW_ROW_LENS[row_idx];
+            assert!(row_idx < 5, "coupling-pan-coeffs.csv has more than 5 rows");
+            let want = COUPLING_PAN_ROW_LENS[row_idx];
             let row: Vec<f32> = line
                 .split(',')
                 .map(|f| {
@@ -897,13 +920,38 @@ pub fn mdct_windows() -> [&'static [f32]; 5] {
             assert_eq!(
                 row.len(),
                 want,
-                "mdct-windows.csv row {row_idx} expected {want} f32, got {}",
+                "coupling-pan-coeffs.csv row {row_idx} expected {want} f32, got {}",
                 row.len()
             );
+            // .meta invariants: monotone-decreasing, 1/sqrt2 centre,
+            // constant-power mirror pairs to < 1e-6.
+            for pair in row.windows(2) {
+                assert!(
+                    pair[0] > pair[1],
+                    "coupling-pan-coeffs row {row_idx} must be strictly decreasing"
+                );
+            }
+            let n = row.len();
+            let centre = row[n / 2];
+            assert!(
+                (centre - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,
+                "coupling-pan-coeffs row {row_idx} centre must be 1/sqrt2, got {centre}"
+            );
+            for j in 0..n {
+                let p = f64::from(row[j]).mul_add(f64::from(row[j]), 0.0)
+                    + f64::from(row[n - 1 - j]) * f64::from(row[n - 1 - j]);
+                assert!(
+                    (p - 1.0).abs() < 1e-6,
+                    "coupling-pan-coeffs row {row_idx} pair {j} constant-power identity: {p}"
+                );
+            }
             out[row_idx] = row;
             row_idx += 1;
         }
-        assert_eq!(row_idx, 5, "mdct-windows.csv must hold exactly 5 rows");
+        assert_eq!(
+            row_idx, 5,
+            "coupling-pan-coeffs.csv must hold exactly 5 rows"
+        );
         out
     });
     [
@@ -926,10 +974,15 @@ pub fn mdct_windows() -> [&'static [f32]; 5] {
 /// [`crate::category_assignment`] constants are cross-checked against
 /// this table by unit tests.
 ///
-/// Panics at first access if a named row is missing or non-numeric —
-/// the same fail-loud contract as every other vendored-table loader.
-pub fn category_assignment_params() -> &'static [(String, i64)] {
-    static T: OnceLock<Vec<(String, i64)>> = OnceLock::new();
+/// Panics at first access if a named row is missing — the same
+/// fail-loud contract as every other vendored-table loader.
+///
+/// Two staged rows are **symbolic**, not numeric (`budget_formula` =
+/// `bit_limit-bit_cursor`, `index_list_length` = `M-1` — the round-9
+/// live-frame identities); they are carried verbatim as
+/// [`CategoryAssignmentParam::Symbolic`] so the table stays complete.
+pub fn category_assignment_params() -> &'static [(String, CategoryAssignmentParam)] {
+    static T: OnceLock<Vec<(String, CategoryAssignmentParam)>> = OnceLock::new();
     T.get_or_init(|| {
         let mut out = Vec::new();
         for (idx, line) in CATEGORY_ASSIGNMENT_PARAMS_CSV.lines().enumerate() {
@@ -948,16 +1001,17 @@ pub fn category_assignment_params() -> &'static [(String, i64)] {
                 .next()
                 .unwrap_or_else(|| panic!("category-assignment-params row {idx}: missing value"))
                 .trim();
-            let value = if let Some(hex) = raw.strip_prefix("0x") {
-                i64::from_str_radix(hex, 16)
+            let numeric = if let Some(hex) = raw.strip_prefix("0x") {
+                i64::from_str_radix(hex, 16).ok()
             } else if let Some(hex) = raw.strip_prefix("-0x") {
-                i64::from_str_radix(hex, 16).map(|v| -v)
+                i64::from_str_radix(hex, 16).ok().map(|v| -v)
             } else {
-                raw.parse::<i64>()
-            }
-            .unwrap_or_else(|e| {
-                panic!("category-assignment-params row {idx} ({name}): non-numeric {raw:?}: {e}")
-            });
+                raw.parse::<i64>().ok()
+            };
+            let value = match numeric {
+                Some(v) => CategoryAssignmentParam::Integer(v),
+                None => CategoryAssignmentParam::Symbolic(raw.to_owned()),
+            };
             out.push((name.to_owned(), value));
         }
         assert_eq!(
@@ -969,6 +1023,17 @@ pub fn category_assignment_params() -> &'static [(String, i64)] {
     })
 }
 
+/// One value of the vendored [`category_assignment_params`] table: a
+/// numeric constant, or one of the two symbolic live-frame identity
+/// rows (`budget_formula`, `index_list_length`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CategoryAssignmentParam {
+    /// A numeric row (decimal or `0x`-prefixed in the CSV).
+    Integer(i64),
+    /// A symbolic identity row, carried verbatim.
+    Symbolic(String),
+}
+
 /// One named §2.2 category-assignment constant from the vendored
 /// [`category_assignment_params`] table.
 ///
@@ -976,11 +1041,237 @@ pub fn category_assignment_params() -> &'static [(String, i64)] {
 /// the callers name compile-time-known rows).
 #[must_use]
 pub fn category_assignment_param(name: &str) -> i64 {
-    category_assignment_params()
+    match &category_assignment_params()
         .iter()
         .find(|(n, _)| n == name)
         .unwrap_or_else(|| panic!("category-assignment-params has no row named {name:?}"))
         .1
+    {
+        CategoryAssignmentParam::Integer(v) => *v,
+        CategoryAssignmentParam::Symbolic(s) => {
+            panic!("category-assignment-params row {name:?} is symbolic ({s:?}), not numeric")
+        }
+    }
+}
+
+/// The three traced real frames' per-frame scalars
+/// (`tables/live-frame-params.csv`, `provenance/09`): container packet,
+/// bit limit / bits consumed, 6-bit envelope seed, 7-bit frame scalar,
+/// coupling-control mode flag, and the §2.2 allocator's live inputs
+/// (`Nb`, budget, `M`) plus the refinement index-list length.
+///
+/// The loader self-validates the `.meta` budget identity
+/// `alloc_budget == bit_limit − bits-at-allocator-call` cannot be
+/// checked here (the cursor at the call is not a column), but the
+/// pinned `idx_list_len == M − 1` identity is asserted for every row.
+pub fn live_frame_params() -> &'static [LiveFrameParams] {
+    static T: OnceLock<Vec<LiveFrameParams>> = OnceLock::new();
+    T.get_or_init(|| {
+        let mut out = Vec::new();
+        for (idx, line) in LIVE_FRAME_PARAMS_CSV.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || idx == 0 {
+                continue;
+            }
+            let f: Vec<i64> = line
+                .split(',')
+                .map(|x| {
+                    x.trim()
+                        .parse::<i64>()
+                        .unwrap_or_else(|_| panic!("live-frame-params row {idx}: non-i64 {x:?}"))
+                })
+                .collect();
+            assert_eq!(
+                f.len(),
+                10,
+                "live-frame-params row {idx} must have 10 columns"
+            );
+            let row = LiveFrameParams {
+                packet: f[0] as u32,
+                bit_limit: f[1] as u32,
+                bits_consumed: f[2] as u32,
+                envelope_seed: f[3] as u32,
+                frame_scalar: f[4] as u32,
+                coupling_vlc_flag: f[5] as u32,
+                band_count: f[6] as u32,
+                alloc_budget: f[7] as i32,
+                refinement_bound: f[8] as u32,
+                idx_list_len: f[9] as u32,
+            };
+            assert_eq!(
+                row.idx_list_len,
+                row.refinement_bound - 1,
+                "live-frame-params row {idx}: idx_list_len must be M - 1"
+            );
+            out.push(row);
+        }
+        assert_eq!(out.len(), 3, "live-frame-params.csv must hold 3 frames");
+        out
+    })
+}
+
+/// One traced real frame's scalars (`tables/live-frame-params.csv`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveFrameParams {
+    /// Container packet index in `FUN_RM_32.rm` (2, 16 or 17).
+    pub packet: u32,
+    /// Bit-reader limit (`+0x47b8`) — 744 bits = the 93-byte sub-packet.
+    pub bit_limit: u32,
+    /// Bits actually consumed by the frame decode.
+    pub bits_consumed: u32,
+    /// The 6-bit envelope seed field as the extractor re-derived it from
+    /// the frame buffer (see the crate README's read-layout caveat).
+    pub envelope_seed: u32,
+    /// The 7-bit frame scalar (semantics NOT established).
+    pub frame_scalar: u32,
+    /// Coupling-control mode flag (0 = fixed-width indices, 1 = VLC).
+    pub coupling_vlc_flag: u32,
+    /// Band count `Nb` (decode-state `+0x20`) — 34 on all traced frames.
+    pub band_count: u32,
+    /// The §2.2 allocator's bit budget (`arg_c`) — the number of
+    /// bitstream bits still unread at the call.
+    pub alloc_budget: i32,
+    /// The refinement bound `M` (decode-state `+0x28`) — 128, pinned by
+    /// replay.
+    pub refinement_bound: u32,
+    /// Length of the refinement index output list (`M − 1`).
+    pub idx_list_len: u32,
+}
+
+/// The three traced real frames' per-band §2.2 allocator I/O
+/// (`tables/live-frame-allocator-io.csv`, `provenance/09`): for each
+/// container packet (2, 16, 17), the 34-band envelope value array `v[]`
+/// the frame body built from the wire and the 34 categories
+/// `cook.dll!0x4800` wrote back — both captured off the caller's stack
+/// during a real `RADecode`.
+pub fn live_frame_allocator_io() -> &'static [LiveFrameAllocatorIo] {
+    static T: OnceLock<Vec<LiveFrameAllocatorIo>> = OnceLock::new();
+    T.get_or_init(|| {
+        let mut frames: Vec<LiveFrameAllocatorIo> = Vec::new();
+        for (idx, line) in LIVE_FRAME_ALLOCATOR_IO_CSV.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || idx == 0 {
+                continue;
+            }
+            let f: Vec<i64> = line
+                .split(',')
+                .map(|x| {
+                    x.trim().parse::<i64>().unwrap_or_else(|_| {
+                        panic!("live-frame-allocator-io row {idx}: non-i64 {x:?}")
+                    })
+                })
+                .collect();
+            assert_eq!(f.len(), 4, "live-frame-allocator-io row {idx}: 4 columns");
+            let (packet, band, v, cat) = (f[0] as u32, f[1] as usize, f[2] as i32, f[3]);
+            assert!((0..=7).contains(&cat), "row {idx}: category out of range");
+            let frame = match frames.iter_mut().find(|fr| fr.packet == packet) {
+                Some(fr) => fr,
+                None => {
+                    frames.push(LiveFrameAllocatorIo {
+                        packet,
+                        values: Vec::new(),
+                        categories: Vec::new(),
+                    });
+                    frames.last_mut().expect("just pushed")
+                }
+            };
+            assert_eq!(
+                frame.values.len(),
+                band,
+                "row {idx}: bands must be in order"
+            );
+            frame.values.push(v);
+            frame.categories.push(cat as u8);
+        }
+        assert_eq!(
+            frames.len(),
+            3,
+            "live-frame-allocator-io.csv must hold 3 frames"
+        );
+        for fr in &frames {
+            assert_eq!(fr.values.len(), 34, "packet {}: 34 bands", fr.packet);
+        }
+        frames
+    })
+}
+
+/// One traced frame's §2.2 allocator inputs and outputs
+/// (`tables/live-frame-allocator-io.csv`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveFrameAllocatorIo {
+    /// Container packet index (2, 16 or 17).
+    pub packet: u32,
+    /// The 34-band envelope value array `v[]` (allocator input).
+    pub values: Vec<i32>,
+    /// The 34 per-band categories the allocator wrote back.
+    pub categories: Vec<u8>,
+}
+
+/// The observed §0.2 pre-spectral wire field order
+/// (`tables/frame-read-layout.csv`, `provenance/09`): one row per wire
+/// field, in read order, carrying the field name, its width spec
+/// (fixed bit count, `coupling_bits` or `VLC`), the reader primitive,
+/// the call-site RVA and the repeat count expression.
+///
+/// The rows are descriptive wire-order facts (the wire order itself is
+/// wired as code in [`crate::frame`]); this loader keeps the staged
+/// table bit-locked to the crate by parsing and shape-checking it.
+pub fn frame_read_layout() -> &'static [FrameReadField] {
+    static T: OnceLock<Vec<FrameReadField>> = OnceLock::new();
+    T.get_or_init(|| {
+        let mut out = Vec::new();
+        for (idx, line) in FRAME_READ_LAYOUT_CSV.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || idx == 0 {
+                continue;
+            }
+            let mut fields = line.splitn(7, ',');
+            let mut next = |what: &str| -> String {
+                fields
+                    .next()
+                    .unwrap_or_else(|| panic!("frame-read-layout row {idx}: missing {what}"))
+                    .trim()
+                    .to_owned()
+            };
+            let row = FrameReadField {
+                order: next("order"),
+                field: next("field"),
+                width: next("width"),
+                reader: next("reader"),
+                call_site_rva: next("call_site_rva"),
+                repeat: next("repeat"),
+                semantics: next("semantics"),
+            };
+            out.push(row);
+        }
+        assert_eq!(out.len(), 9, "frame-read-layout.csv must hold 9 rows");
+        out
+    })
+}
+
+/// One observed wire field of the §0.2 pre-spectral frame read layout
+/// (`tables/frame-read-layout.csv`). All columns are carried verbatim
+/// as strings — the staged table mixes numeric widths with symbolic
+/// ones (`coupling_bits`, `VLC`) and expression repeats (`Ncoupband`,
+/// `Nb-1`, `per band`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameReadField {
+    /// Wire-order key (`1`..`8`, with `3a`/`3b` for the two coupling
+    /// branches).
+    pub order: String,
+    /// Field name.
+    pub field: String,
+    /// Width spec: a bit count, `coupling_bits`, or `VLC`.
+    pub width: String,
+    /// Reader primitive (`read-n-bits 0x3f40`, `read-1-bit 0x3fc0`,
+    /// `VLC walk 0x3a50`).
+    pub reader: String,
+    /// Call-site RVA of the read.
+    pub call_site_rva: String,
+    /// Repeat count expression.
+    pub repeat: String,
+    /// Quoted semantics note.
+    pub semantics: String,
 }
 
 #[cfg(test)]
@@ -998,12 +1289,12 @@ mod tests {
         assert_eq!(category_level_count().len(), CATEGORY_LEVEL_COUNT_LEN);
         assert_eq!(reciprocal_1_over_n().len(), RECIPROCAL_LEN);
         assert_eq!(category_index_lut().len(), CATEGORY_INDEX_LUT_LEN);
-        let windows = mdct_windows();
-        for (i, &want) in MDCT_WINDOW_ROW_LENS.iter().enumerate() {
-            assert_eq!(windows[i].len(), want);
+        let pan = coupling_pan_coeffs();
+        for (i, &want) in COUPLING_PAN_ROW_LENS.iter().enumerate() {
+            assert_eq!(pan[i].len(), want);
         }
-        let total: usize = windows.iter().map(|w| w.len()).sum();
-        assert_eq!(total, MDCT_WINDOWS_TOTAL_LEN);
+        let total: usize = pan.iter().map(|w| w.len()).sum();
+        assert_eq!(total, COUPLING_PAN_TOTAL_LEN);
         assert_eq!(category_vector_dim_lo().len(), CATEGORY_VECTOR_DIM_LEN);
         assert_eq!(category_vector_dim_hi().len(), CATEGORY_VECTOR_DIM_LEN);
         assert_eq!(spectral_codebook_dims().len(), SPECTRAL_CODEBOOK_DIMS_LEN);
@@ -1120,47 +1411,27 @@ mod tests {
     }
 
     #[test]
-    fn mdct_windows_satisfy_princen_bradley() {
-        // .meta: the four shorter windows (3, 7, 15, 31) satisfy
-        // w[k]^2 + w[N-1-k]^2 = 1 to < 1e-3. The 64-window is the
-        // analysis/synthesis pair, identical TDAC check.
-        let windows = mdct_windows();
-        for w in &windows[..4] {
-            let n = w.len();
-            for k in 0..n / 2 {
-                let lhs = w[k] * w[k] + w[n - 1 - k] * w[n - 1 - k];
+    fn coupling_pan_rows_satisfy_constant_power_to_1e6() {
+        // .meta: ALL 119 values satisfy t[j]^2 + t[n-1-j]^2 = 1 to
+        // < 1e-6 (the round-10 re-verification tightened the old 1e-3
+        // claim), every row length is (1 << w) - 1, and each odd-length
+        // row carries exactly 1/sqrt2 at its symmetric centre.
+        let pan = coupling_pan_coeffs();
+        for (i, row) in pan.iter().enumerate() {
+            let n = row.len();
+            assert_eq!(n, (1usize << (i + 2)) - 1, "row {i} length");
+            for j in 0..n {
+                let p = f64::from(row[j]) * f64::from(row[j])
+                    + f64::from(row[n - 1 - j]) * f64::from(row[n - 1 - j]);
                 assert!(
-                    (lhs - 1.0).abs() < 1e-3,
-                    "TDAC fail at len={n}, k={k}: {lhs}"
+                    (p - 1.0).abs() < 1e-6,
+                    "constant-power fail at row {i}, j={j}: {p}"
                 );
             }
-        }
-    }
-
-    fn one_over_sqrt2_present_near_centre(w: &[f32]) -> bool {
-        // The `.meta` summary "1/sqrt2 at its midpoint" is anchored
-        // empirically: odd-length rows (3 / 7 / 15 / 31) carry the
-        // value at the symmetric midpoint `w[N/2]`; the 64-row carries
-        // it one slot earlier, at `w[N/2 - 1] = w[31]` (the half-window
-        // straddles the boundary). Accept either candidate position.
-        let target = (0.5_f32).sqrt();
-        let n = w.len();
-        let mid_hi = w[n / 2];
-        let mid_lo = if n >= 2 { w[n / 2 - 1] } else { mid_hi };
-        (mid_hi - target).abs() < 5e-3 || (mid_lo - target).abs() < 5e-3
-    }
-
-    #[test]
-    fn mdct_windows_have_one_over_sqrt2_near_midpoint() {
-        // .meta: each window is monotone-decreasing with 1/sqrt2 at its
-        // midpoint. The odd-length rows match the symmetric midpoint
-        // exactly; the 64-row carries 1/sqrt2 at index 32 (`w[N/2]`).
-        let windows = mdct_windows();
-        for (i, w) in windows.iter().enumerate() {
+            let centre = row[n / 2];
             assert!(
-                one_over_sqrt2_present_near_centre(w),
-                "row {i} (len {}) does not carry 1/sqrt2 at midpoint",
-                w.len()
+                (centre - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6,
+                "row {i} centre {centre} != 1/sqrt2"
             );
         }
     }
@@ -1293,16 +1564,94 @@ mod tests {
     }
 
     #[test]
-    fn mdct_windows_monotone_decreasing() {
-        let windows = mdct_windows();
-        for (i, w) in windows.iter().enumerate() {
+    fn coupling_pan_rows_strictly_decreasing() {
+        let pan = coupling_pan_coeffs();
+        for (i, w) in pan.iter().enumerate() {
             for ww in w.windows(2) {
                 assert!(
-                    ww[0] >= ww[1],
-                    "row {i}: expected monotone-decreasing, got {ww:?}"
+                    ww[0] > ww[1],
+                    "row {i}: expected strictly decreasing, got {ww:?}"
                 );
             }
         }
+    }
+
+    // ----- round-9 live-frame observation tables --------------------
+
+    #[test]
+    fn live_frame_params_pin_the_traced_frames() {
+        let rows = live_frame_params();
+        assert_eq!(rows.len(), 3);
+        let packets: Vec<u32> = rows.iter().map(|r| r.packet).collect();
+        assert_eq!(packets, [2, 16, 17]);
+        for r in rows {
+            // One RADecode call decodes one 93-byte sub-packet.
+            assert_eq!(r.bit_limit, 744);
+            assert!(r.bits_consumed <= r.bit_limit);
+            assert_eq!(r.band_count, 34);
+            assert_eq!(r.refinement_bound, 128);
+            assert_eq!(r.idx_list_len, 127);
+            // The budget is the number of unread bits at the allocator
+            // call; the pre-spectral read is well over 100 bits, so the
+            // budget is strictly inside the frame.
+            assert!(r.alloc_budget > 0 && (r.alloc_budget as u32) < r.bit_limit);
+        }
+        // The .meta cursor identity: budget = bit_limit - cursor, with
+        // the recorded cursors 179 / 175 / 177.
+        assert_eq!(rows[0].alloc_budget, 744 - 179);
+        assert_eq!(rows[1].alloc_budget, 744 - 175);
+        assert_eq!(rows[2].alloc_budget, 744 - 177);
+    }
+
+    #[test]
+    fn live_frame_allocator_io_matches_params_frames() {
+        let io = live_frame_allocator_io();
+        let params = live_frame_params();
+        assert_eq!(io.len(), 3);
+        for (fr, pr) in io.iter().zip(params) {
+            assert_eq!(fr.packet, pr.packet);
+            assert_eq!(fr.values.len(), pr.band_count as usize);
+            assert_eq!(fr.categories.len(), pr.band_count as usize);
+            // Every traced frame ends on the category-7 empty band.
+            assert_eq!(*fr.categories.last().unwrap(), 7);
+            // The envelope values are small positive band indices.
+            assert!(fr.values.iter().all(|&v| (0..64).contains(&v)));
+        }
+    }
+
+    #[test]
+    fn frame_read_layout_pins_the_wire_order() {
+        let rows = frame_read_layout();
+        let fields: Vec<&str> = rows.iter().map(|r| r.field.as_str()).collect();
+        assert_eq!(
+            fields,
+            [
+                "subpacket_flag",
+                "coupling_vlc_flag",
+                "coupling_index_fixed",
+                "coupling_index_vlc",
+                "envelope_seed",
+                "envelope_value",
+                "frame_scalar_7",
+                "--",
+                "spectral",
+            ]
+        );
+        // The fixed-width bit counts of the pinned fields.
+        assert_eq!(rows[0].width, "1");
+        assert_eq!(rows[1].width, "1");
+        assert_eq!(rows[2].width, "coupling_bits");
+        assert_eq!(rows[3].width, "VLC");
+        assert_eq!(rows[4].width, "6");
+        assert_eq!(rows[5].width, "VLC");
+        assert_eq!(rows[6].width, "7");
+        // The allocator row consumes no bits.
+        assert_eq!(rows[7].width, "0");
+        assert!(rows[7]
+            .semantics
+            .contains("budget == bit_limit - bit_cursor"));
+        // The envelope VLC selects from the 31-entry tree family.
+        assert!(rows[5].semantics.contains("31-entry tree array"));
     }
 
     // ----- runtime-recovered N=1024 DSP tables (round 8 staging) ----

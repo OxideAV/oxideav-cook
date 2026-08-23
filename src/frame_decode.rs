@@ -167,14 +167,17 @@ pub fn decode_spectrum_assigned(
 /// has no closed form (a recorded gap), and the per-band rotation
 /// indices are read through the coupling control (fixed-width or
 /// VLC-gated — [`crate::coupling_control`]). The rotation **coefficient
-/// values** are the recovered §4.3 table
-/// ([`crate::coupling::coupling_coefficient_table`]), no longer a GAP.
+/// values** are the vendored per-coupling-width §4.3 pan tables
+/// ([`crate::coupling::coupling_pan_table`]), no longer a GAP.
 #[derive(Debug, Clone)]
 pub struct FrameCoupling<'a> {
     /// Contiguous coupling-band subband range `[first..last)` (§4.1).
     pub coupling_bands: core::ops::Range<u32>,
     /// One rotation index `j` per coupling band (§4.1).
     pub indices: &'a [u32],
+    /// The stream's coupling-index bit width, selecting the §4.3 pan
+    /// table (`Ncoup = (1 << w) - 1`; context `+0x1c`).
+    pub pan_width: crate::coupling::CouplingPanWidth,
 }
 
 /// One decoded frame's per-channel reconstructed spectrum.
@@ -212,8 +215,13 @@ pub fn decode_frame_spectrum(
         1 => Ok(DecodedSpectrum::Mono(coupled)),
         2 => {
             let c = coupling.ok_or(Error::StereoCouplingMissing)?;
-            let stereo =
-                decouple_stereo_recovered(&coupled, geometry, c.coupling_bands.clone(), c.indices)?;
+            let stereo = decouple_stereo_recovered(
+                &coupled,
+                geometry,
+                c.coupling_bands.clone(),
+                c.indices,
+                c.pan_width,
+            )?;
             Ok(DecodedSpectrum::Stereo(stereo))
         }
         other => Err(Error::CookieInvalidChannels { got: other }),
@@ -414,12 +422,13 @@ mod tests {
         let bytes = pack(&fields);
         let mut reader = FrameBitReader::new(&bytes);
 
-        // Couple bands [2..5), index 0 (full channel-0 steer for the
-        // recovered table: coef[0]=1, coef[Ncoup-1]≈0).
+        // Couple bands [2..5), index 0 (strongest channel-0 steer of
+        // the w=4 pan table).
         let indices = [0u32, 0, 0];
         let coupling = FrameCoupling {
             coupling_bands: 2..5,
             indices: &indices,
+            pan_width: crate::coupling::CouplingPanWidth::W4,
         };
         let out =
             decode_frame_spectrum(&mut reader, &geom, &cats, &[2.0], 2, Some(&coupling)).unwrap();
@@ -428,11 +437,13 @@ mod tests {
                 let total = geom.total_coded_lines() as usize;
                 assert_eq!(s.ch0.len(), total);
                 assert_eq!(s.ch1.len(), total);
-                // Band 2 line: index 0 → ch0 carries the coupled value,
-                // ch1 ≈ 0 (recovered coef[511] ≈ 0).
+                // Band 2 line: index 0 → ch0 carries most of the
+                // coupled value, ch1 the mirror partner.
                 let r2 = geom.line_range(2).unwrap();
                 let coupled_val = dequantise_level(cat(6), 1, 0, 2.0).unwrap();
-                let (a, b) = crate::coupling::coupling_pan_pair(0).unwrap();
+                let (a, b) =
+                    crate::coupling::coupling_pan_pair(crate::coupling::CouplingPanWidth::W4, 0)
+                        .unwrap();
                 assert!((s.ch0[r2.start as usize] - coupled_val * a).abs() < 1e-4);
                 assert!((s.ch1[r2.start as usize] - coupled_val * b).abs() < 1e-4);
             }
@@ -581,6 +592,7 @@ mod tests {
         let coupling = FrameCoupling {
             coupling_bands: 2..5,
             indices: &indices,
+            pan_width: crate::coupling::CouplingPanWidth::W4,
         };
         let mut ra = FrameBitReader::new(&bytes);
         let via_assigned = decode_frame_spectrum_assigned(

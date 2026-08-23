@@ -174,21 +174,21 @@
 //! [`Driver::decode_call`] is now the
 //! `flags = `[`RADECODE_FLAGS_DECODE`] shorthand.
 //!
-//! Round 16 wires the typed accessor for the
-//! windowing / overlap-add side of the inverse-MDCT stage: the
-//! [`mdct`] module keys the five vendored Princen-Bradley half-windows
-//! (`cook.dll!0x8d0c`, lengths 3 / 7 / 15 / 31 / 64) behind a typed
-//! [`MdctWindowLength`] selector — only the five stored lengths are
-//! constructible ([`MdctWindowLength::from_len`] raises the typed
-//! [`Error::MdctWindowLengthUnsupported`] otherwise) — with
-//! [`mdct_half_window`] as the length-keyed lookup and the audit-#14
-//! boundary facts (`provenance/03`: window table spans
-//! `0x8d0c`..`0x8eec`, abutting the 51-entry category LUT) surfaced as
-//! derived RVA constants. The long/short adaptive switching that
-//! selects a window at runtime (spec/01 §5.1) and the inverse-MDCT
+//! Round 16 wired a typed accessor over the five short `.rdata` tables
+//! at `cook.dll!0x8d0c` under their then-staged "MDCT half-windows"
+//! label. **Round 10 of the docs workspace withdrew that label**
+//! (`provenance/10`): the tables are the §4.3 joint-stereo
+//! pan-coefficient tables — their single consumer in the image is the
+//! §4.2 stereo split at `cook.dll!0x3e96`, and zero-filling the
+//! `coupling_bits`-selected row moves 3060/4096 PCM bytes of a real
+//! decoded frame while the other four rows are bit-inert. They now
+//! live behind [`coupling::CouplingPanWidth`] /
+//! [`coupling::coupling_pan_table`] (`Ncoup = (1 << w) - 1`, widths
+//! 2..=6), and the §4.2/§4.3 split consumes them directly. The
+//! transform's apodisation window is a different, runtime-built object
+//! (the recovered [`mdct::long_full_window_unit`]); the inverse-MDCT
 //! kernel itself (the `0xa1b0` rotation table, audit #16: no validated
-//! closed form) remain GAPs — only the typed window-table access is
-//! wired.
+//! closed form) remains a GAP.
 //!
 //! Round 17 (this round) wires the typed accessor for the last
 //! vendored DSP table without one: the 11-entry reciprocal
@@ -436,8 +436,8 @@ pub use category_assignment::{
 pub use codebook::{spectral_huffman, SpectralHuffman, CODEBOOK_COUNT};
 #[doc(hidden)]
 pub use coupling::{
-    coupling_coefficient, coupling_coefficient_table, coupling_pan_pair, split_coupled_recovered,
-    COUPLING_RECOVERED_BITS, COUPLING_RECOVERED_LEN,
+    coupling_pan_pair, coupling_pan_table, split_coupled_recovered, CouplingPanWidth,
+    COUPLING_PAN_DISPATCH_RVA, COUPLING_PAN_TABLE_RVA,
 };
 #[doc(hidden)]
 pub use coupling::{CouplingMode, StereoMode, STEREO_MODE_MAX, STEREO_MODE_MIN};
@@ -492,11 +492,9 @@ pub use index_decomp::{
 pub use init::{DecodeConfig, Descriptor, PCM_BYTES_PER_SAMPLE, RADECODE_FLAGS_DECODE};
 #[doc(hidden)]
 pub use mdct::{
-    long_full_window, long_full_window_unit, long_half_window, mdct_full_window, mdct_half_window,
-    window_builder_consts, window_builder_denominator, window_builder_half_bias,
-    window_builder_phase, window_builder_pi, MdctWindowLength, LONG_TRANSFORM_N,
-    MDCT_WINDOW_BUILDER_CONSTS_RVA, MDCT_WINDOW_COUNT, MDCT_WINDOW_TABLE_END_RVA,
-    MDCT_WINDOW_TABLE_RVA,
+    long_full_window, long_full_window_unit, long_half_window, window_builder_consts,
+    window_builder_denominator, window_builder_half_bias, window_builder_phase, window_builder_pi,
+    LONG_TRANSFORM_N, MDCT_WINDOW_BUILDER_CONSTS_RVA,
 };
 #[doc(hidden)]
 pub use output_stage::{
@@ -692,13 +690,13 @@ pub enum Error {
         /// The supplied axis position.
         got: u8,
     },
-    /// A requested MDCT half-window length was not one of the five the
-    /// binary stores (3 / 7 / 15 / 31 / 64 —
-    /// `docs/audio/cook/tables/mdct-windows.meta`: *"rows:
-    /// 3,7,15,31,64"*).
-    MdctWindowLengthUnsupported {
-        /// The supplied element count.
-        got: usize,
+    /// A coupling-index bit width had no §4.3 pan-coefficient table —
+    /// the binary stores tables for widths `2..=6` only (the `0x8ee8`
+    /// dispatch array's slots 0/1 are NULL and it ends at slot 6;
+    /// `docs/audio/cook/tables/coupling-pan-coeffs.meta`).
+    CouplingPanWidthUnsupported {
+        /// The supplied coupling-index bit width.
+        got: u32,
     },
     /// A flavor record's `+0x04` stereo-mode selector was outside the set
     /// `docs/audio/cook/spec/02-cook-flavor-and-extradata-layout.md` §1
@@ -1170,10 +1168,10 @@ impl core::fmt::Display for Error {
                  (max is {})",
                 MAX_BIT_ALLOC_AXIS_POSITION
             ),
-            Error::MdctWindowLengthUnsupported { got } => write!(
+            Error::CouplingPanWidthUnsupported { got } => write!(
                 f,
-                "oxideav-cook: MDCT half-window length {got} is not one of the five stored \
-                 lengths (3 / 7 / 15 / 31 / 64)"
+                "oxideav-cook: coupling-index bit width {got} has no stored pan-coefficient \
+                 table (the binary stores widths 2..=6)"
             ),
             Error::StereoModeUnsupported { got } => write!(
                 f,

@@ -212,92 +212,171 @@ impl FlavorRecord {
     }
 }
 
-// ---- §4.3 recovered coupling rotation table -------------------------
+// ---- §4.3 per-coupling-width pan-coefficient tables ------------------
 //
-// The per-coupling-width coefficient table `spec/05` §4.3 recorded as a
-// runtime-built GAP was recovered by the docs round-8 init drive
-// (`provenance/06`, `tables/coupling-rotation-coeffs.meta`): the builder
-// `cook.dll!0x40a0` runs at `RAInitDecoder` (tail-called from the window
-// builder `0x3290`) and fills two buffers hung off the decode state —
-// 256 unit-circle `(cos θ, sin θ)` pairs at `+0x47b4` and a 512-entry
-// bit-reversal index at `+0x47b8` — for the recovered coupling width
-// `1 << 9 = 512` (state `+0x47ac`). The accessors below expose the
-// **logical** coefficient table `coef[j]` the §4.2 mirror split reads:
-// the permutation maps a coupling index onto its element slot in the
-// flattened pair buffer, and it is an involution (a bit reversal), so
-// `coef[j] = flat[perm[j]]`.
+// The per-coupling-width coefficient tables `spec/05` §4.3 once recorded
+// as a runtime-built GAP are CONST `.rdata` inside the image (round 9):
+// five contiguous tables at RVA `0x8d0c`, one per coupling width
+// `w = 2..=6`, of length `(1 << w) - 1`, ending exactly at the dispatch
+// pointer array at `0x8ee8` that indexes them by width. All 119 values
+// satisfy the constant-power identity `t[j]^2 + t[n-1-j]^2 = 1` to
+// better than 1e-6, each row is strictly decreasing, and each centre is
+// `1/sqrt2` — the mirror-index pan law of §4.2. The identification is
+// behavioural, not just structural: the range has exactly one consumer
+// in the whole image (the §4.2 stereo split at `cook.dll!0x3e96`), and
+// zero-filling the `coupling_bits`-selected table moves 3060/4096 PCM
+// bytes of a real decoded frame while the other four rows are bit-inert
+// (`tables/probe_coupling_table_ablation.js`; spec/05 §4.3,
+// provenance/09 §5, provenance/10).
+//
+// The init-built 256-pair rotation buffer and 512-entry bit-reversal
+// index the docs round 8 staged (`tables/coupling-rotation-coeffs`,
+// `tables/coupling-index-permutation`) are NOT this consumer's table —
+// they remain vendored through [`crate::tables`] as recovered numeric
+// facts whose consuming stage is unpinned (a bit-reversal permutation
+// is transform-kernel shaped; the staged §4.3 label predates the
+// round-9 ablation and is flagged in the crate README).
 
-/// The recovered coupling-index bit width (state `+0x1c` / `+0x47ac`):
-/// the init drive built the table for `Ncoup = 1 << 9`.
-pub const COUPLING_RECOVERED_BITS: u32 = 9;
+/// `.rdata` RVA of the five concatenated §4.3 pan-coefficient tables
+/// (`tables/coupling-pan-coeffs.meta`, spec/05 §4.3).
+pub const COUPLING_PAN_TABLE_RVA: u32 = 0x8d0c;
 
-/// The recovered coupling table length `Ncoup = 512`.
-pub const COUPLING_RECOVERED_LEN: u32 = 1 << COUPLING_RECOVERED_BITS;
+/// RVA of the dispatch pointer array indexing the five tables by
+/// coupling width (`[width*4 + 0x8ee8]`, spec/05 §4.3). The tables end
+/// exactly here: `0x8d0c + 4 x 119 = 0x8ee8`.
+pub const COUPLING_PAN_DISPATCH_RVA: u32 =
+    COUPLING_PAN_TABLE_RVA + (crate::tables::COUPLING_PAN_TOTAL_LEN as u32) * 4;
 
-/// The logical §4.2/§4.3 coupling coefficient table `coef[0..Ncoup]`,
-/// de-permuted from the two recovered buffers
-/// ([`crate::tables::coupling_rotation_coeffs`] flattened, indexed
-/// through [`crate::tables::coupling_index_permutation`]).
+/// Typed selector over the five coupling-index bit widths the binary
+/// stores a §4.3 pan table for (`w = 2..=6`; spec/05 §4.3).
 ///
-/// `coef[j]` is what `spec/05` §4.2 reads as the channel-0 factor for
-/// coupling index `j`; the channel-1 factor is the mirror partner
-/// `coef[Ncoup - 1 - j]`. The de-permuted table splits into a cosine
-/// half followed by a sine half (the recovered pairs are unit-circle),
-/// so the mirror pair behaves as the §4.2 `(cos θ_j, sin θ_j)` pan —
-/// pinned numerically by the unit tests from the recovered values
-/// alone.
-pub fn coupling_coefficient_table() -> &'static [f32] {
-    use std::sync::OnceLock;
-    static T: OnceLock<Vec<f32>> = OnceLock::new();
-    T.get_or_init(|| {
-        let pairs = crate::tables::coupling_rotation_coeffs();
-        let perm = crate::tables::coupling_index_permutation();
-        // Flatten the (cos, sin) pairs in buffer order, then read
-        // through the permutation: coef[j] = flat[perm[j]].
-        let flat: Vec<f32> = pairs.iter().flat_map(|p| p.iter().copied()).collect();
-        perm.iter().map(|&s| flat[s as usize]).collect()
-    })
+/// The validated `FUN_RM_32.rm` stream selects `w = 4`
+/// (`coupling_bits = 4`; provenance/09 §2), the only row with
+/// behavioural evidence of being consumed — the other four are staged
+/// as extracted bytes reachable by the same dispatch code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CouplingPanWidth {
+    /// Coupling width 2 — 3-entry table at `0x8d0c`.
+    W2,
+    /// Coupling width 3 — 7-entry table at `0x8d18`.
+    W3,
+    /// Coupling width 4 — 15-entry table at `0x8d34` (the validated
+    /// stream's width).
+    W4,
+    /// Coupling width 5 — 31-entry table at `0x8d70`.
+    W5,
+    /// Coupling width 6 — 63-entry table at `0x8dec`.
+    W6,
 }
 
-/// One §4.3 coupling coefficient `coef[j]` of the recovered
-/// `Ncoup = 512` table.
-///
-/// # Errors
-///
-/// [`Error::CouplingIndexOutOfRange`] when
-/// `j >= `[`COUPLING_RECOVERED_LEN`].
-pub fn coupling_coefficient(j: u32) -> Result<f32, Error> {
-    if j >= COUPLING_RECOVERED_LEN {
-        return Err(Error::CouplingIndexOutOfRange {
-            got: j,
-            ncoup: COUPLING_RECOVERED_LEN,
-        });
+impl CouplingPanWidth {
+    /// All five stored widths, in table (row) order.
+    pub const ALL: [CouplingPanWidth; 5] = [
+        CouplingPanWidth::W2,
+        CouplingPanWidth::W3,
+        CouplingPanWidth::W4,
+        CouplingPanWidth::W5,
+        CouplingPanWidth::W6,
+    ];
+
+    /// Build from the per-flavor coupling-index bit width (context
+    /// `+0x1c`).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::CouplingPanWidthUnsupported`] for any width outside
+    /// `2..=6` — the dispatch array's slots 0/1 are NULL and it has no
+    /// slot past 6.
+    pub fn from_bits(coupling_bits: u32) -> Result<Self, Error> {
+        match coupling_bits {
+            2 => Ok(CouplingPanWidth::W2),
+            3 => Ok(CouplingPanWidth::W3),
+            4 => Ok(CouplingPanWidth::W4),
+            5 => Ok(CouplingPanWidth::W5),
+            6 => Ok(CouplingPanWidth::W6),
+            other => Err(Error::CouplingPanWidthUnsupported { got: other }),
+        }
     }
-    Ok(coupling_coefficient_table()[j as usize])
+
+    /// The coupling-index bit width `w`.
+    #[must_use]
+    pub const fn bits(self) -> u32 {
+        match self {
+            CouplingPanWidth::W2 => 2,
+            CouplingPanWidth::W3 => 3,
+            CouplingPanWidth::W4 => 4,
+            CouplingPanWidth::W5 => 5,
+            CouplingPanWidth::W6 => 6,
+        }
+    }
+
+    /// Row index of this width's table inside the five-row vendored
+    /// concatenation.
+    #[must_use]
+    pub const fn row_index(self) -> usize {
+        (self.bits() - 2) as usize
+    }
+
+    /// The table length `Ncoup = (1 << w) - 1` — one less than the
+    /// power of two, matching the observed coupling-index range
+    /// (`0..=14` on the `w = 4` stream; provenance/09 §2).
+    #[must_use]
+    pub const fn table_len(self) -> u32 {
+        (1 << self.bits()) - 1
+    }
+
+    /// RVA of this width's table head (pure RVA arithmetic from the
+    /// `.meta` table head; `0x8d0c / 0x8d18 / 0x8d34 / 0x8d70 /
+    /// 0x8dec`).
+    #[must_use]
+    pub const fn rva(self) -> u32 {
+        let mut off = 0u32;
+        let mut i = 0usize;
+        while i < self.row_index() {
+            off += (crate::tables::COUPLING_PAN_ROW_LENS[i] as u32) * 4;
+            i += 1;
+        }
+        COUPLING_PAN_TABLE_RVA + off
+    }
 }
 
-/// The §4.2 mirror pan pair `(coef[j], coef[Ncoup-1-j])` for a coupling
-/// index of the recovered table — channel 0's and channel 1's factors.
+/// The §4.3 pan-coefficient table for one coupling width
+/// (`tables/coupling-pan-coeffs.csv`, row selected as the binary's
+/// `[width*4 + 0x8ee8]` dispatch does).
+///
+/// The returned slice has exactly [`CouplingPanWidth::table_len`]
+/// elements, strictly decreasing with `1/sqrt2` at its centre.
+#[must_use]
+pub fn coupling_pan_table(width: CouplingPanWidth) -> &'static [f32] {
+    crate::tables::coupling_pan_coeffs()[width.row_index()]
+}
+
+/// The §4.2 mirror pan pair `(t[j], t[Ncoup-1-j])` for one coupling
+/// index — channel 0's and channel 1's factors.
 ///
 /// # Errors
 ///
 /// [`Error::CouplingIndexOutOfRange`] when `j >= Ncoup`.
-pub fn coupling_pan_pair(j: u32) -> Result<(f32, f32), Error> {
-    let partner = crate::spectral::mirror_partner_index(j, COUPLING_RECOVERED_LEN)?;
-    let t = coupling_coefficient_table();
+pub fn coupling_pan_pair(width: CouplingPanWidth, j: u32) -> Result<(f32, f32), Error> {
+    let t = coupling_pan_table(width);
+    let partner = crate::spectral::mirror_partner_index(j, width.table_len())?;
     Ok((t[j as usize], t[partner as usize]))
 }
 
 /// Split one coupled coefficient by the §4.2 mirror rotation over the
-/// **recovered** §4.3 table —
-/// [`crate::spectral::split_coupled_coefficient`] with the vendored
+/// vendored §4.3 pan table for `width` —
+/// [`crate::spectral::split_coupled_coefficient`] with the extracted
 /// values instead of a caller-supplied slice.
 ///
 /// # Errors
 ///
 /// [`Error::CouplingIndexOutOfRange`] when `j >= Ncoup`.
-pub fn split_coupled_recovered(c: f32, j: u32) -> Result<(f32, f32), Error> {
-    crate::spectral::split_coupled_coefficient(c, j, coupling_coefficient_table())
+pub fn split_coupled_recovered(
+    c: f32,
+    width: CouplingPanWidth,
+    j: u32,
+) -> Result<(f32, f32), Error> {
+    crate::spectral::split_coupled_coefficient(c, j, coupling_pan_table(width))
 }
 
 #[cfg(test)]
@@ -459,118 +538,105 @@ mod tests {
         assert!(r21.is_coupled() && r21.is_stereo());
     }
 
-    // ---- §4.3 recovered rotation table ------------------------------
+    // ---- §4.3 per-coupling-width pan tables --------------------------
 
     #[test]
-    fn coupling_table_has_the_recovered_width() {
-        assert_eq!(COUPLING_RECOVERED_LEN, 512);
-        assert_eq!(
-            coupling_coefficient_table().len(),
-            COUPLING_RECOVERED_LEN as usize
-        );
-        assert_eq!(
-            crate::spectral::coupling_table_len(COUPLING_RECOVERED_BITS),
-            COUPLING_RECOVERED_LEN
-        );
-    }
-
-    #[test]
-    fn depermuted_table_is_a_cosine_then_sine_ramp() {
-        // Numeric structure of the recovered values (no formula was
-        // used to build them): coef[0] = 1, the first half decreases
-        // monotonically from +1 toward −1 (a cosine sweep), and the
-        // second half opens at 0 (coef[256] = sin 0).
-        let t = coupling_coefficient_table();
-        assert_eq!(t[0], 1.0);
-        for j in 1..256usize {
-            assert!(
-                t[j] < t[j - 1],
-                "cos half must decrease at {j}: {} !< {}",
-                t[j],
-                t[j - 1]
-            );
+    fn pan_widths_cover_the_dispatch_array() {
+        for (i, w) in CouplingPanWidth::ALL.iter().enumerate() {
+            assert_eq!(w.row_index(), i);
+            assert_eq!(w.bits(), (i + 2) as u32);
+            assert_eq!(w.table_len(), (1 << w.bits()) - 1);
+            assert_eq!(coupling_pan_table(*w).len() as u32, w.table_len());
+            assert_eq!(CouplingPanWidth::from_bits(w.bits()).unwrap(), *w);
         }
-        assert!(t[255] < -0.999, "cos half must approach -1");
-        assert!(t[256].abs() < 1e-6, "sine half must open at 0");
-    }
-
-    #[test]
-    fn depermuted_table_matches_the_quarter_turn_closed_form() {
-        // The recovered §4.3 table de-permutes, to f32 precision, to the
-        // quarter-turn sweep: the first 256 slots are coef[j] = cos(j·π/256)
-        // (a full half-circle +1 → −1), the second 256 are
-        // coef[256+r] = sin(r·π/256). Pinning the vendored values to that
-        // generating identity validates the recovery + de-permutation and
-        // documents the mirror-pan angle law — analysis on the extracted
-        // numbers only, no external source.
-        let t = coupling_coefficient_table();
-        for (j, &tj) in t[..256].iter().enumerate() {
-            let want = (std::f64::consts::PI * j as f64 / 256.0).cos() as f32;
-            assert!(
-                (tj - want).abs() < 1e-6,
-                "coef[{j}] = {tj} vs cos({j}·π/256) = {want}"
-            );
-        }
-        for (r, &tr) in t[256..].iter().enumerate() {
-            let want = (std::f64::consts::PI * r as f64 / 256.0).sin() as f32;
-            assert!(
-                (tr - want).abs() < 1e-6,
-                "coef[256+{r}] = {tr} vs sin({r}·π/256) = {want}"
+        // spec/05 §4.3 row heads: 0x8d0c / 0x8d18 / 0x8d34 / 0x8d70 / 0x8dec.
+        let rvas: Vec<u32> = CouplingPanWidth::ALL.iter().map(|w| w.rva()).collect();
+        assert_eq!(rvas, [0x8d0c, 0x8d18, 0x8d34, 0x8d70, 0x8dec]);
+        // The five tables end exactly at the dispatch pointer array.
+        assert_eq!(COUPLING_PAN_DISPATCH_RVA, 0x8ee8);
+        // Widths outside 2..=6 have no table (dispatch slots 0/1 NULL).
+        for bad in [0u32, 1, 7, 32] {
+            assert_eq!(
+                CouplingPanWidth::from_bits(bad).unwrap_err(),
+                Error::CouplingPanWidthUnsupported { got: bad }
             );
         }
     }
 
     #[test]
-    fn mirror_pan_pairs_conserve_energy() {
-        // The §4.2 pair (coef[j], coef[Ncoup-1-j]) behaves as a
-        // (cos θ, sin θ) pan: its energy stays within ~1.3% of unity
-        // across the whole recovered table (the residual is the
-        // half-step phase offset between the two halves).
-        for j in 0..COUPLING_RECOVERED_LEN {
-            let (a, b) = coupling_pan_pair(j).unwrap();
-            let e = a * a + b * b;
-            assert!(
-                (e - 1.0).abs() < 0.02,
-                "pan energy at j={j} is {e}, expected ~1"
-            );
+    fn pan_pairs_conserve_power_and_steer_across_the_table() {
+        for w in CouplingPanWidth::ALL {
+            let n = w.table_len();
+            for j in 0..n {
+                let (a, b) = coupling_pan_pair(w, j).unwrap();
+                let e = f64::from(a) * f64::from(a) + f64::from(b) * f64::from(b);
+                assert!(
+                    (e - 1.0).abs() < 1e-6,
+                    "width {w:?} j={j}: pan energy {e} != 1"
+                );
+            }
+            // j = 0 steers most of the energy to channel 0; the last
+            // index mirrors it to channel 1; the centre index splits
+            // evenly (both factors 1/sqrt2).
+            let (a0, b0) = coupling_pan_pair(w, 0).unwrap();
+            assert!(a0 > b0, "width {w:?}: j=0 must favour channel 0");
+            let (al, bl) = coupling_pan_pair(w, n - 1).unwrap();
+            assert_eq!((al, bl), (b0, a0), "mirror symmetry at the ends");
+            let (ac, bc) = coupling_pan_pair(w, n / 2).unwrap();
+            assert_eq!(ac, bc, "centre index must split evenly");
+            assert!((ac - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
         }
-    }
-
-    #[test]
-    fn pan_endpoints_steer_fully() {
-        // j = 0: all energy to channel 0; j = Ncoup-1: all to channel 1.
-        let (a0, b0) = coupling_pan_pair(0).unwrap();
-        assert_eq!(a0, 1.0);
-        assert!(b0.abs() < 0.02, "j=0 partner {b0} must be ~0");
-        let (a1, b1) = coupling_pan_pair(COUPLING_RECOVERED_LEN - 1).unwrap();
-        assert!(
-            a1.abs() < 0.02 && (b1 - 1.0).abs() < 1e-6,
-            "j=Ncoup-1 pair ({a1}, {b1}) must steer to channel 1"
-        );
     }
 
     #[test]
     fn split_coupled_recovered_matches_the_generic_split() {
-        for &j in &[0u32, 1, 64, 255, 256, 300, 511] {
-            let (a, b) = split_coupled_recovered(2.0, j).unwrap();
+        let w = CouplingPanWidth::W4; // the validated stream's width
+        for j in 0..w.table_len() {
+            let (a, b) = split_coupled_recovered(2.0, w, j).unwrap();
             let (ga, gb) =
-                crate::spectral::split_coupled_coefficient(2.0, j, coupling_coefficient_table())
-                    .unwrap();
+                crate::spectral::split_coupled_coefficient(2.0, j, coupling_pan_table(w)).unwrap();
             assert_eq!((a, b), (ga, gb));
-            assert_eq!(a, 2.0 * coupling_coefficient(j).unwrap());
         }
     }
 
     #[test]
     fn coupling_index_out_of_range_is_rejected() {
+        let w = CouplingPanWidth::W4;
         assert_eq!(
-            coupling_coefficient(COUPLING_RECOVERED_LEN).unwrap_err(),
+            coupling_pan_pair(w, w.table_len()).unwrap_err(),
             Error::CouplingIndexOutOfRange {
-                got: COUPLING_RECOVERED_LEN,
-                ncoup: COUPLING_RECOVERED_LEN
+                got: w.table_len(),
+                ncoup: w.table_len()
             }
         );
-        assert!(coupling_pan_pair(COUPLING_RECOVERED_LEN).is_err());
-        assert!(split_coupled_recovered(1.0, COUPLING_RECOVERED_LEN).is_err());
+        assert!(split_coupled_recovered(1.0, w, w.table_len()).is_err());
+    }
+
+    // ---- init-built rotation buffers (consuming stage unpinned) ------
+
+    #[test]
+    fn init_rotation_buffers_depermute_to_a_quarter_turn_sweep() {
+        // The round-8 init drive recovered 256 unit-circle (cos, sin)
+        // pairs plus a 512-entry bit-reversal index. De-permuted
+        // (flat[perm[j]]), the values are the quarter-turn sweep
+        // cos(j*pi/256) for j < 256 then sin(r*pi/256) — a transform-
+        // kernel-shaped rotation ramp. The §4.2 stereo split does NOT
+        // read these buffers (the round-9 ablation pinned its table to
+        // the `.rdata` pan rows above); their consuming stage stays
+        // unpinned, so the structure is validated here as extracted
+        // numeric fact only.
+        let pairs = crate::tables::coupling_rotation_coeffs();
+        let perm = crate::tables::coupling_index_permutation();
+        let flat: Vec<f32> = pairs.iter().flat_map(|p| p.iter().copied()).collect();
+        let t: Vec<f32> = perm.iter().map(|&s| flat[s as usize]).collect();
+        assert_eq!(t.len(), 512);
+        for (j, &tj) in t[..256].iter().enumerate() {
+            let want = (std::f64::consts::PI * j as f64 / 256.0).cos() as f32;
+            assert!((tj - want).abs() < 1e-6, "slot {j}: {tj} vs cos {want}");
+        }
+        for (r, &tr) in t[256..].iter().enumerate() {
+            let want = (std::f64::consts::PI * r as f64 / 256.0).sin() as f32;
+            assert!((tr - want).abs() < 1e-6, "slot 256+{r}: {tr} vs sin {want}");
+        }
     }
 }

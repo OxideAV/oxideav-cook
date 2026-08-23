@@ -31,16 +31,20 @@
 //!
 //! ## Window inputs
 //!
-//! [`Synthesizer::from_stored`] builds the engine over one of the five
-//! vendored windows ([`crate::mdct::mdct_full_window`], hops 3 / 7 / 15
-//! / 31 / 64). [`Synthesizer::with_window`] accepts a caller-supplied
-//! full window for other hop sizes: the **frame-length** window (e.g.
-//! `2 × 1024` taps for the validated stream's 1024-sample frames) is not
-//! among the extracted tables — like the codebook and coupling tables it
-//! would be built at runtime — so it stays a caller input (a recorded
-//! GAP), never fabricated here. The engine's arithmetic is
-//! window-agnostic; its perfect-reconstruction property is pinned by the
-//! tests over the vendored windows.
+//! [`Synthesizer::with_recovered_long_window`] builds the engine over
+//! the runtime-recovered N = 1024 apodisation window
+//! ([`crate::mdct::long_full_window_unit`], hop 512) — the vendor
+//! decoder's own taps. [`Synthesizer::with_window`] accepts a
+//! caller-supplied full window for other hop sizes (windows for other
+//! transform sizes are runtime-built and not among the extracted
+//! tables). The engine's arithmetic is window-agnostic; its
+//! perfect-reconstruction property is pinned by the tests.
+//!
+//! > **Round-10 correction.** An earlier `from_stored` constructor
+//! > windowed with the five short `.rdata` tables at `0x8d0c`. Those
+//! > are the §4.3 joint-stereo pan-coefficient tables
+//! > ([`crate::coupling::coupling_pan_table`]), not windows — the
+//! > constructor is withdrawn with the label.
 //!
 //! ## Wall-respect note
 //!
@@ -87,16 +91,6 @@ impl Synthesizer {
             window: window.to_vec(),
             tail: vec![0.0; window.len() / 2],
         })
-    }
-
-    /// Build the engine over one of the five vendored Princen-Bradley
-    /// windows ([`mdct::mdct_full_window`]); the hop equals the stored
-    /// half-window length (3 / 7 / 15 / 31 / 64).
-    pub fn from_stored(len: mdct::MdctWindowLength) -> Self {
-        // The vendored full window is even-length and non-empty by
-        // construction, so `with_window` cannot fail here.
-        Self::with_window(mdct::mdct_full_window(len))
-            .expect("vendored full windows are non-empty and even-length")
     }
 
     /// Build the engine over the **recovered long-transform window**
@@ -207,7 +201,6 @@ impl Synthesizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mdct::MdctWindowLength;
     use crate::mlt_direct;
 
     fn prng(seed: &mut u32) -> f32 {
@@ -238,18 +231,16 @@ mod tests {
     }
 
     #[test]
-    fn from_stored_wires_the_vendored_window() {
-        for wl in MdctWindowLength::ALL {
-            let s = Synthesizer::from_stored(wl);
-            assert_eq!(s.hop(), wl.window_len());
-            assert_eq!(s.window(), crate::mdct::mdct_full_window(wl));
-            assert!(s.tail().iter().all(|&v| v == 0.0), "fresh tail zeroed");
-        }
+    fn recovered_long_window_wires_hop_512() {
+        let s = Synthesizer::with_recovered_long_window();
+        assert_eq!(s.hop(), 512);
+        assert_eq!(s.window(), crate::mdct::long_full_window_unit());
+        assert!(s.tail().iter().all(|&v| v == 0.0), "fresh tail zeroed");
     }
 
     #[test]
     fn push_rejects_wrong_spectrum_length() {
-        let mut s = Synthesizer::from_stored(MdctWindowLength::L7);
+        let mut s = Synthesizer::with_window(&synthetic_tdac_window(7)).unwrap();
         assert_eq!(
             s.push_spectrum(&[0.0; 6]).unwrap_err(),
             Error::SynthesisSpectrumLengthMismatch { got: 6, hop: 7 }
@@ -258,7 +249,7 @@ mod tests {
 
     #[test]
     fn push_rejects_empty_gain_profile() {
-        let mut s = Synthesizer::from_stored(MdctWindowLength::L3);
+        let mut s = Synthesizer::with_window(&synthetic_tdac_window(3)).unwrap();
         assert_eq!(
             s.push_spectrum_with_gain(&[0.0; 3], &[]).unwrap_err(),
             Error::GainBlockCountZero
@@ -270,7 +261,7 @@ mod tests {
         // The all-zero spectral stream synthesizes to all-zero output —
         // the observe-gate / warm-up consistency property
         // (validation/04 §4.3: zeroed overlap-add output).
-        let mut s = Synthesizer::from_stored(MdctWindowLength::L31);
+        let mut s = Synthesizer::with_window(&synthetic_tdac_window(31)).unwrap();
         for _ in 0..4 {
             let out = s.push_spectrum(&[0.0; 31]).unwrap();
             assert_eq!(out.len(), 31);
@@ -280,19 +271,13 @@ mod tests {
     }
 
     #[test]
-    fn streaming_reconstruction_over_stored_windows() {
-        // End-to-end streaming PR over the vendored windows whose TDAC
-        // identity the .meta pins: analysis-window+MLT per frame, push
-        // through the engine, and every emitted block from the second
-        // on reproduces the source signal.
-        for wl in [
-            MdctWindowLength::L3,
-            MdctWindowLength::L7,
-            MdctWindowLength::L15,
-            MdctWindowLength::L31,
-        ] {
-            let mut s = Synthesizer::from_stored(wl);
-            let hop = s.hop();
+    fn streaming_reconstruction_over_synthetic_windows() {
+        // End-to-end streaming PR across several hop sizes:
+        // analysis-window+MLT per frame, push through the engine, and
+        // every emitted block from the second on reproduces the source.
+        for hop in [3usize, 7, 15, 31] {
+            let window = synthetic_tdac_window(hop);
+            let mut s = Synthesizer::with_window(&window).unwrap();
             let w = s.window().to_vec();
             let frames = 6usize;
             let mut seed = 0xC00C_0000u32 ^ hop as u32;
@@ -398,8 +383,9 @@ mod tests {
         // On a fresh engine (zero tail) a flat gain profile of 2.0
         // doubles the emitted block relative to the unity profile.
         let spectrum: Vec<f32> = (0..15).map(|k| (k as f32) - 7.0).collect();
-        let mut a = Synthesizer::from_stored(MdctWindowLength::L15);
-        let mut b = Synthesizer::from_stored(MdctWindowLength::L15);
+        let window = synthetic_tdac_window(15);
+        let mut a = Synthesizer::with_window(&window).unwrap();
+        let mut b = Synthesizer::with_window(&window).unwrap();
         let unity = a.push_spectrum(&spectrum).unwrap();
         let doubled = b.push_spectrum_with_gain(&spectrum, &[2.0]).unwrap();
         for i in 0..15 {
@@ -417,14 +403,16 @@ mod tests {
 
     #[test]
     fn reset_restores_warmup_state() {
-        let mut s = Synthesizer::from_stored(MdctWindowLength::L7);
+        let window = synthetic_tdac_window(7);
+        let mut s = Synthesizer::with_window(&window).unwrap();
         let spectrum = [1.0f32; 7];
         s.push_spectrum(&spectrum).unwrap();
         assert!(s.tail().iter().any(|&v| v != 0.0));
         s.reset();
         assert!(s.tail().iter().all(|&v| v == 0.0));
         // Post-reset behaviour matches a fresh engine.
-        let fresh = Synthesizer::from_stored(MdctWindowLength::L7)
+        let fresh = Synthesizer::with_window(&window)
+            .unwrap()
             .push_spectrum(&spectrum)
             .unwrap();
         let after = s.push_spectrum(&spectrum).unwrap();

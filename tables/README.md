@@ -18,7 +18,7 @@ workspace).
 | `category-level-count.csv`  | 7   | u32 | `crate::tables::category_level_count` |
 | `reciprocal-1-over-n.csv`   | 11  | f32 | `crate::tables::reciprocal_1_over_n` |
 | `category-index-lut.csv`    | 51  | u32 | `crate::tables::category_index_lut` |
-| `mdct-windows.csv`          | 5 rows (3, 7, 15, 31, 64) | f32 | `crate::tables::mdct_windows` |
+| `coupling-pan-coeffs.csv`   | 5 rows (3, 7, 15, 31, 63) | f32 | `crate::tables::coupling_pan_coeffs` |
 | `category-vector-dim-lo.csv` | 7  | u32 | `crate::tables::category_vector_dim_lo` |
 | `category-vector-dim-hi.csv` | 7  | u32 | `crate::tables::category_vector_dim_hi` |
 | `spectral-codebook-dims.csv` | 7  | u32 | `crate::tables::spectral_codebook_dims` |
@@ -37,14 +37,33 @@ workspace).
 | `spectral-dequant-scale.csv` | 8  | f32 | `crate::tables::spectral_dequant_scale` |
 | `sign-lut.csv`              | 2   | f32 | `crate::tables::sign_lut` |
 | `category-expectation.csv`  | 98 (0.0-delimited rows) | f32 | `crate::tables::category_expectation` |
+| `frame-read-layout.csv`     | 9 named wire fields | text | `crate::tables::frame_read_layout` |
+| `live-frame-params.csv`     | 3 frames × 10 | i32 | `crate::tables::live_frame_params` |
+| `live-frame-allocator-io.csv` | 3 frames × 34 bands | i32 | `crate::tables::live_frame_allocator_io` |
 
-The `mdct-*-1024` and `coupling-*` tables are **runtime-recovered**
-facts: they are built by the vendor decoder's own `RAInitDecoder` into
+The `mdct-*-1024`, `coupling-rotation-coeffs` and
+`coupling-index-permutation` tables are **runtime-recovered** facts:
+they are built by the vendor decoder's own `RAInitDecoder` into
 heap/BSS buffers (never present in the file image) and were dumped from
 the guest memory the vendor DLL populated in the univdreams sandbox
 (`docs/audio/cook/provenance/06-cook-univdreams-extraction.md`,
 `extract_runtime_dsp.py`) — data facts read from the decoder's memory
 image, not an algorithmic derivation.
+
+`coupling-pan-coeffs.csv` is the round-10 **relabel** of the range this
+crate previously vendored as `mdct-windows.csv`: the five short
+`.rdata` tables at `0x8d0c` are the §4.3 joint-stereo pan-coefficient
+tables (one per coupling width `w = 2..=6`, length `(1 << w) - 1`,
+extents read from the `0x8ee8` dispatch pointer array), not transform
+windows — see `docs/audio/cook/provenance/10-cook-coupling-pan-label.md`.
+The old row-4 length 64 carried one spurious trailing `0.0` (the
+dispatch array's first unused slot); the corrected row is 63 values.
+
+The `frame-read-layout` / `live-frame-*` tables are round-9 **observed**
+facts: the wire field order and the per-frame allocator inputs/outputs
+of three real `RADecode` frames, captured by watching the vendor
+decoder's own stores during a live decode
+(`docs/audio/cook/provenance/09-cook-frame-read-layout.md`).
 
 Tables are loaded at access time via `include_str!` and parsed on
 demand; numbers are never retyped into Rust source. Per-table loaders

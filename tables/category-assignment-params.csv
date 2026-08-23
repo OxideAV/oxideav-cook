@@ -1,15 +1,20 @@
 param,value,note
 base_constant_K,32,0x20 added in the per-band category expression
 offset_start,-32,0xffffffe0 initial global bit-allocation offset
-bisection_step_0,32,0x20 first halving step (task's "0x20 round bound")
-bisection_step_1,16,0x10 second step (task's "0x10 round bound")
+bisection_step_0,32,"0x20 first halving step (task's ""0x20 round bound"")"
+bisection_step_1,16,"0x10 second step (task's ""0x10 round bound"")"
 bisection_step_2,8,third step
 bisection_step_3,4,fourth step
 bisection_step_4,2,fifth step
 bisection_step_5,1,sixth (final) step; loop stops when step>>1 == 0
 category_divisor,2,arithmetic right shift by 1 (floor) of (K+offset-v[b])
 category_clip_lo,0,lower clip bound
-category_clip_hi,7,upper clip bound (category 7 = empty band, cost 0)
-cost_lut_rva,0x8f38,per-category bit-cost {52,47,43,37,29,22,16} for cat 0..6 (category-cost-lut.csv)
+category_clip_hi,7,"upper clip bound (category 7 = empty band, cost 0)"
+cost_lut_rva,0x8f38,"per-category bit-cost {52,47,43,37,29,22,16} for cat 0..6 (category-cost-lut.csv)"
 cost_cat7,0,LUT[7] = the 0 pad at 0x8f54; empty band spends no bits
 refinement_bound_field,0x28,decode-state field read as the per-band +-1 refinement pass bound
+budget_formula,bit_limit-bit_cursor,the allocator's bit budget (arg_c) is the number of bitstream bits still unread at the call: reader +0x47b8 minus +0x47b4 (live-frame-params.csv)
+band_count_field,0x20,decode-state field read as the band count Nb; live value 34 for the 1024-line / 32-subband stereo flavor
+band_count_live,34,observed Nb on real frames of fixtures/FUN_RM_32.rm
+refinement_bound_live,128,"observed M (decode-state +0x28) on real frames; pinned by replay - M=128 reproduces the live categories exactly, M=127/129 do not"
+index_list_length,M-1,"length of the refinement index output array arg_14; 127 entries at M=128, matching the synthetic sweep (M=2 -> 1 entry)"

@@ -292,9 +292,10 @@ pub fn decouple_stereo(
     Ok(StereoSpectra { ch0, ch1 })
 }
 
-/// [`decouple_stereo`] over the **recovered** §4.3 rotation table
-/// ([`crate::coupling::coupling_coefficient_table`], `Ncoup = 512`) —
-/// the coefficient values are no longer a caller-supplied GAP input.
+/// [`decouple_stereo`] over the vendored §4.3 pan-coefficient table for
+/// one coupling width ([`crate::coupling::coupling_pan_table`],
+/// `Ncoup = (1 << w) - 1`; spec/05 §4.3, round-9 ablation) — the
+/// coefficient values are no longer a caller-supplied GAP input.
 ///
 /// # Errors
 ///
@@ -304,13 +305,14 @@ pub fn decouple_stereo_recovered(
     geometry: &SubbandGeometry,
     coupling_bands: core::ops::Range<u32>,
     indices: &[u32],
+    width: crate::coupling::CouplingPanWidth,
 ) -> Result<StereoSpectra, Error> {
     decouple_stereo(
         coupled,
         geometry,
         coupling_bands,
         indices,
-        crate::coupling::coupling_coefficient_table(),
+        crate::coupling::coupling_pan_table(width),
     )
 }
 
@@ -611,16 +613,18 @@ mod tests {
 
     #[test]
     fn decouple_recovered_applies_the_vendored_pan_pairs() {
-        // Two coupling bands, indices 0 (full channel-0 steer) and 256
-        // (the sine half's opening): every line of each band must carry
-        // that band's recovered pan pair, scaled by the coupled value.
+        // Two coupling bands, indices 0 (strongest channel-0 steer) and
+        // 7 (the even centre split of the w=4 table): every line of each
+        // band must carry that band's pan pair, scaled by the coupled
+        // value.
         let geom = SubbandGeometry::new(20).unwrap();
         let coupled = vec![2.0f32; geom.total_coded_lines() as usize];
-        let indices = [0u32, 256];
-        let split = decouple_stereo_recovered(&coupled, &geom, 3..5, &indices).unwrap();
+        let width = crate::coupling::CouplingPanWidth::W4;
+        let indices = [0u32, 7];
+        let split = decouple_stereo_recovered(&coupled, &geom, 3..5, &indices, width).unwrap();
         for (n, band) in (3u32..5).enumerate() {
             let range = geom.line_range(band).unwrap();
-            let (a, b) = crate::coupling::coupling_pan_pair(indices[n]).unwrap();
+            let (a, b) = crate::coupling::coupling_pan_pair(width, indices[n]).unwrap();
             for line in range.start as usize..range.end as usize {
                 assert_eq!(split.ch0[line], 2.0 * a, "band {band} line {line}");
                 assert_eq!(split.ch1[line], 2.0 * b, "band {band} line {line}");

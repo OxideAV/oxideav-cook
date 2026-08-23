@@ -242,7 +242,6 @@ fn fft_in_place(re: &mut [f64], im: &mut [f64]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mdct::{mdct_full_window, MdctWindowLength};
 
     /// Deterministic pseudo-random f32 in [-1, 1] (no dev-deps).
     fn prng(seed: &mut u32) -> f32 {
@@ -379,20 +378,22 @@ mod tests {
         assert!(y.iter().all(|&v| v == 0.0));
     }
 
+    /// An exact-TDAC test window (`sin(π(k+½)/2L)` satisfies
+    /// `W[k]² + W[k+L]² = 1` exactly) — a pure test fixture, not the
+    /// codec's window.
+    fn synthetic_tdac_window(hop: usize) -> Vec<f32> {
+        (0..2 * hop)
+            .map(|k| ((k as f64 + 0.5) * core::f64::consts::PI / (2.0 * hop as f64)).sin() as f32)
+            .collect()
+    }
+
     #[test]
     fn windowed_overlap_add_reconstructs_signal() {
-        // The full perfect-reconstruction chain over the stored windows
-        // whose TDAC identity the .meta pins (3/7/15/31): analysis-window
-        // → MLT → IMLT → synthesis-window → overlap-add reproduces the
-        // input, frame after frame.
-        for wl in [
-            MdctWindowLength::L3,
-            MdctWindowLength::L7,
-            MdctWindowLength::L15,
-            MdctWindowLength::L31,
-        ] {
-            let w = mdct_full_window(wl);
-            let hop = w.len() / 2;
+        // The full perfect-reconstruction chain across several hop
+        // sizes: analysis-window → MLT → IMLT → synthesis-window →
+        // overlap-add reproduces the input, frame after frame.
+        for hop in [3usize, 7, 15, 31] {
+            let w = synthetic_tdac_window(hop);
             let frames = 6usize;
             let mut seed = 0x5EED_0000u32 ^ hop as u32;
             let signal: Vec<f32> = (0..hop * (frames + 2)).map(|_| prng(&mut seed)).collect();
