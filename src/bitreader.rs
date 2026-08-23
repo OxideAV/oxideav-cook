@@ -76,27 +76,31 @@ pub const WORD_BITS: u32 = 32;
 /// Number of bytes in one input word.
 pub const WORD_BYTES: usize = 4;
 
-/// Context offset of the reader's **word pointer** field (`+0x479c`,
-/// `spec/05` §0.1 / `provenance/05` evidence #1). Surfaced as a named
-/// constant only — the Rust reader holds the equivalent state inline.
-pub const CTX_WORD_POINTER_OFFSET: u32 = 0x479c;
+/// Context offset of the reader's **word pointer** field (`+0x47ac`,
+/// `spec/05` §0.1; round 9 corrected the four offsets — they were
+/// observed directly as the stores a live `RADecode` makes into the
+/// backend object, `0x10` above the earlier static reading). Surfaced
+/// as a named constant only — the Rust reader holds the equivalent
+/// state inline.
+pub const CTX_WORD_POINTER_OFFSET: u32 = 0x47ac;
 
-/// Context offset of the reader's **bit position** field (`+0x47a0`,
+/// Context offset of the reader's **bit position** field (`+0x47b0`,
 /// bits already consumed from the current word, `0..31`).
-pub const CTX_BIT_POSITION_OFFSET: u32 = 0x47a0;
+pub const CTX_BIT_POSITION_OFFSET: u32 = 0x47b0;
 
-/// Context offset of the reader's **bit cursor** field (`+0x47a4`, the
-/// running count of bits consumed in this frame).
-pub const CTX_BIT_CURSOR_OFFSET: u32 = 0x47a4;
+/// Context offset of the reader's **bit cursor** field (`+0x47b4`, the
+/// running count of bits consumed in this frame — the field whose
+/// stores the round-9 trace watched to recover the wire layout).
+pub const CTX_BIT_CURSOR_OFFSET: u32 = 0x47b4;
 
-/// Context offset of the reader's **bit limit** field (`+0x47a8`, total
+/// Context offset of the reader's **bit limit** field (`+0x47b8`, total
 /// frame size in bits; reads at or past it return `0`).
-pub const CTX_BIT_LIMIT_OFFSET: u32 = 0x47a8;
+pub const CTX_BIT_LIMIT_OFFSET: u32 = 0x47b8;
 
 /// MSB-first big-endian frame bit reader (`spec/05` §0.1).
 ///
 /// Holds the four-field reader state inline (the binary keeps it at
-/// `[ctx+0x479c..0x47a8]`): the input byte slice viewed as big-endian
+/// `[ctx+0x47ac..0x47b8]`): the input byte slice viewed as big-endian
 /// 32-bit words, the running **bit cursor** (`+0x47a4`), and the **bit
 /// limit** (`+0x47a8`). The word pointer (`+0x479c`) and within-word bit
 /// position (`+0x47a0`) are derived from the cursor on each read
@@ -250,6 +254,16 @@ impl<'a> FrameBitReader<'a> {
     /// end of frame. This is `read_bits(1)`.
     pub fn read_bit(&mut self) -> u32 {
         self.read_bits(1)
+    }
+
+    /// Advances the cursor by `n` bits without assembling a value —
+    /// the walk-level skip a caller uses to step over a region whose
+    /// *values* it holds from another source (e.g. the injected
+    /// envelope array of [`crate::frame::EnvelopeInjection`], whose
+    /// wire form is the unstaged envelope VLC). Clamps at the bit limit
+    /// like every read.
+    pub fn skip_bits(&mut self, n: u32) {
+        self.cursor = self.cursor.saturating_add(n).min(self.limit);
     }
 
     /// Reads the next single bit as the **signed flag** the binary

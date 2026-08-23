@@ -260,8 +260,9 @@
 //! This round wires the foundational primitive every backend frame stage
 //! consumes: the MSB-first big-endian frame [`bitreader::FrameBitReader`]
 //! (`spec/05` §0.1, `provenance/05` evidence #1). It holds the four-field
-//! reader state block (`+0x479c` word pointer / `+0x47a0` bit position /
-//! `+0x47a4` bit cursor / `+0x47a8` bit limit) and exposes the two pinned
+//! reader state block (`+0x47ac` word pointer / `+0x47b0` bit position /
+//! `+0x47b4` bit cursor / `+0x47b8` bit limit; round-9 corrected
+//! offsets) and exposes the two pinned
 //! reader primitives: [`FrameBitReader::read_bits`] (`read-n-bits`,
 //! `cook.dll!0x3f40`, the closed form `word << pos | next >> (32 - pos)`
 //! then `>> (32 - n)`) and [`FrameBitReader::read_bit`] /
@@ -269,32 +270,28 @@
 //! unsigned `0`/`1` and the binary's arithmetic-shift `0`/`-1` flag form).
 //! Reads at or past the bit limit return `0` and clamp the cursor.
 //!
-//! A later round wires the **first frame-body stage** the bit reader
-//! feeds — the per-sub-packet [`gain`] envelope (`spec/05` §1,
-//! `provenance/05` evidence #2 / #3). Two statically-pinned, non-GAP
-//! primitives are wired on top of [`FrameBitReader`] and the
-//! [`scale`] ladder: [`gain::read_segment_count`] (the leading 6-bit
-//! field + the `−6` bias the worker `cook.dll!0x4b50` applies, so the
-//! field carries `segment_count + 6`) and [`gain::gain_factor_for_index`]
-//! (a per-segment gain index → `2^(index/2)` via the `0x93f8` ladder's
-//! centre, `1.0` at element 63 — the `0x94f4` positive-window sub-pointer
-//! of evidence #3, surfaced as [`gain::GAIN_POS_WINDOW`]). The
-//! per-segment *record reads* (position + gain index) descend the VLC
-//! walk `cook.dll!0x3a50`, whose codebook bytes are a §3.2 BSS GAP, and
-//! the §1.2 piecewise-constant interpolation/application over the
-//! transform sub-blocks both stay recorded GAPs.
+//! A later round wired what was then read as the **first frame-body
+//! stage** — a §1.1 time-domain gain envelope. **Round 9 withdrew that
+//! reading** (see [`gain`]): the head worker fills the §2.2 allocator's
+//! per-band value array `v[]`, and the [`gain`] module now carries only
+//! the ladder resolution ([`gain::gain_factor_for_index`], the `0x93f8`
+//! ladder's centre `1.0` at element 63 — the `0x94f4` positive-window
+//! sub-pointer of evidence #3, surfaced as [`gain::GAIN_POS_WINDOW`])
+//! and the §1.2-shaped profile expansion/application primitives.
 //!
 //! The latest rounds assemble the **frame-body orchestrator**
-//! ([`frame::decode_frame_body`]): it drives the statically-pinned
-//! prefix of the §0–§3 walk — the §1.1 gain-segment count, the §2.1
-//! subband → coefficient-range geometry ([`subband::SubbandGeometry`])
-//! — and stops precisely at the §3 spectral-VLC dequant step, whose
-//! seven Huffman codebooks' code/length bytes are runtime-built in
-//! `.data` BSS at init and absent from the file image (`spec/05` §3.2,
-//! docs-gap #1775). [`Driver::decode_call`] now drives every sub-packet
-//! through that orchestrator on the real-decode gate, surfacing the
-//! typed [`Error::SpectralCodebookBytesUnavailable`] blocker rather than
-//! the opaque [`Error::NotImplemented`].
+//! ([`frame::decode_frame_body`]) around the round-9 §0.2 wire order:
+//! the fixed-width head ([`frame::read_frame_head`]: sub-packet flag,
+//! coupling control, envelope seed), the field-5 envelope values (the
+//! unstaged 31-entry VLC tree family — injectable via
+//! [`frame::EnvelopeInjection`]), the 7-bit frame scalar, the §2.2
+//! allocator with the round-9 budget rule, the §3 spectral read over
+//! the 20-line band geometry ([`subband::SubbandGeometry`]) and the §4
+//! pan split. [`Driver::decode_call`] drives every call through that
+//! walk on the real-decode gate, surfacing the typed
+//! [`Error::EnvelopeValueTreeUnavailable`] /
+//! [`Error::CouplingIndexTreeUnavailable`] gaps rather than the opaque
+//! [`Error::NotImplemented`].
 //!
 //! The §1.2 gain *application* (piecewise-constant hold + time-domain
 //! multiply) and the §4.2 joint-stereo mirror-index split are also wired
@@ -468,8 +465,8 @@ pub use flavor_property::{
 };
 #[doc(hidden)]
 pub use frame::{
-    decode_frame_body, frame_body_prefix, reconstruct_frame_spectrum, FrameSpectrum, FrameWalk,
-    StereoCoupling,
+    decode_frame_body, read_frame_head, reconstruct_frame_spectrum, CouplingMap, EnvelopeInjection,
+    FrameBody, FrameHead, FrameHeadCoupling, FrameLayout, FrameSpectrum, StereoCoupling,
 };
 #[doc(hidden)]
 pub use frame_decode::{
@@ -479,7 +476,7 @@ pub use frame_decode::{
 #[doc(hidden)]
 pub use gain::{
     apply_gain_blocks, apply_gain_envelope, expand_gain_envelope, gain_factor_for_index,
-    read_segment_count, GainSegment, GAIN_POS_WINDOW, SEGMENT_COUNT_BIAS, SEGMENT_COUNT_FIELD_BITS,
+    GainSegment, GAIN_POS_WINDOW,
 };
 #[doc(hidden)]
 pub use imlt::{imlt, imlt_direct, mlt_direct};
@@ -849,19 +846,6 @@ pub enum Error {
     /// cannot occur for a looked-up [`CategoryVectorDims`]; surfaced here
     /// rather than dividing by zero).
     SpectralVectorDimZero,
-    /// The per-frame gain-envelope segment-count field biased to a
-    /// negative count.
-    ///
-    /// `spec/05` §1.1 (evidence #2): the leading 6-bit field carries
-    /// `segment_count + 6` and the worker forms `field − 6`; a
-    /// well-formed stream therefore never carries a raw value below `6`.
-    /// A raw field `< 6` (or an absent field that reads `0` at end of
-    /// frame) would bias negative — surfaced here rather than silently
-    /// wrapping.
-    GainSegmentCountUnderflow {
-        /// The raw 6-bit field value (`< 6`) that biased negative.
-        raw: u32,
-    },
     /// A gain-envelope application was asked to expand over `0`
     /// sub-blocks.
     ///
@@ -923,34 +907,64 @@ pub enum Error {
         /// The number of coupling indices the caller supplied.
         got: usize,
     },
-    /// The backend per-frame walk cannot advance into the §3 spectral
-    /// entropy read from raw frame bytes: the **pre-spectral bitstream
-    /// read layout** that positions the reader at the §3 data is not
-    /// pinned by the allowed spec.
+    /// The §0.2 frame walk stopped at field 5 — the `Nb − 1` envelope
+    /// values are read through a separate **31-entry VLC tree family**
+    /// at `backend+0x44c8` (`spec/05` §1.1, tree `max(0, k − 3)` for
+    /// symbol `k`) whose per-symbol code/length contents are **not**
+    /// among the staged tables.
     ///
-    /// The seven Huffman codebooks' per-symbol code/length bytes — once
-    /// the file-image GAP this variant was named for (docs-gap #1775) —
-    /// were subsequently **recovered** and are now vendored
-    /// (`tables/spectral-codebook-{codes,code-lengths}.csv`) and wired
-    /// ([`crate::codebook`] / [`crate::spectral_decode`]); given a
-    /// per-band category list the §3 read runs end-to-end
-    /// ([`decode_spectrum`]). What remains unpinned by `spec/05` is the
-    /// **read layout that reaches** that step on a real frame: which of
-    /// the recovered codebooks the §1.2 gain-index and §2.2 per-band
-    /// quant-index VLC reads select, and how the category-assignment
-    /// value array `v[]` is formed from the bitstream (the input the
-    /// recovered [`crate::category_assignment`] loop consumes). With the
-    /// reader positioned at the §3 data and a category list in hand the
-    /// walk completes; positioning it from the frame head does not.
-    ///
-    /// Distinct from [`Error::NotImplemented`]: every statically-pinned
-    /// frame-body stage before this point ran (the §1.1 gain segment
-    /// count, the §2.1 subband geometry). The same
-    /// read-layout / selection gap (not a missing-bytes gap) is what a
-    /// future Validator round that traces the live decoder's per-band
-    /// reads would close. The variant name is retained for API
-    /// compatibility.
-    SpectralCodebookBytesUnavailable,
+    /// This is the narrowed successor of the retired
+    /// `SpectralCodebookBytesUnavailable` blocker: round 9 pinned the
+    /// whole pre-spectral wire order (`tables/frame-read-layout.csv`),
+    /// the allocator budget rule and the live `v[]` captures, so the
+    /// only unstaged wire reads are this envelope tree family and the
+    /// coupling-index VLC branch
+    /// ([`Error::CouplingIndexTreeUnavailable`]). Callers holding a
+    /// captured `v[]` + cursor resume through
+    /// [`crate::frame::EnvelopeInjection`].
+    EnvelopeValueTreeUnavailable,
+    /// The §0.2 coupling control selected the VLC branch (mode flag
+    /// `1`, field 3b) — the coupling-index VLC tree contents are not
+    /// among the staged tables (`spec/05` §4.1; the fixed-width branch
+    /// is fully implemented).
+    CouplingIndexTreeUnavailable,
+    /// No traced §0.2 frame layout exists for this flavor geometry —
+    /// the per-flavor `Nb` / `coupling_bits` / `Ncoupband` / `M`
+    /// values are behavioural observations (`tables/live-frame-params`)
+    /// pinned only for the validated stereo 32-subband 1024-line
+    /// family (records 21/22); other flavors need their own trace
+    /// rather than a fabricated layout.
+    FrameLayoutUnknown {
+        /// Channel count of the unmatched geometry.
+        channels: u16,
+        /// Subband count of the unmatched geometry.
+        subband_count: u32,
+        /// Samples per frame of the unmatched geometry.
+        samples_per_frame: u32,
+    },
+    /// An injected envelope cursor ([`crate::frame::EnvelopeInjection`])
+    /// lies before the frame head or past the bit limit.
+    FrameCursorOutOfRange {
+        /// The injected cursor (bit position of the 7-bit frame scalar).
+        got: u32,
+        /// The cursor at the end of the fixed-width head.
+        head: u32,
+        /// The frame bit limit.
+        limit: u32,
+    },
+    /// A [`crate::frame::CouplingMap`] does not tile the band count:
+    /// `start_band + coupling_bands × subbands_per_index` must equal
+    /// `Nb` (and `subbands_per_index` must be non-zero).
+    CouplingMapMismatch {
+        /// First coupled subband.
+        start_band: u32,
+        /// Subbands covered per coupling index.
+        subbands_per_index: u32,
+        /// Coupling band count (`Ncoupband`).
+        coupling_bands: u32,
+        /// The allocator band count `Nb`.
+        band_count: u32,
+    },
     /// A reciprocal-table index was outside the seven-entry `0x8fac`
     /// Q-format reciprocal array
     /// (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §2.2:
@@ -1251,11 +1265,6 @@ impl core::fmt::Display for Error {
                 "oxideav-cook: spectral-vector dimension is 0 \
                  (a real per-category dimension is 2..=10; spec/05 §3.1)",
             ),
-            Error::GainSegmentCountUnderflow { raw } => write!(
-                f,
-                "oxideav-cook: gain-envelope segment-count field {raw} biased \
-                 to a negative count (field carries segment_count + 6; spec/05 §1.1)"
-            ),
             Error::GainBlockCountZero => f.write_str(
                 "oxideav-cook: gain-envelope application asked to expand over 0 \
                  sub-blocks (spec/05 §1.2 expands one factor per sub-block)",
@@ -1282,10 +1291,42 @@ impl core::fmt::Display for Error {
                 "oxideav-cook: coupling index count {got} does not match the \
                  coupling-band count {coupling_bands} (spec/05 §4.1)"
             ),
-            Error::SpectralCodebookBytesUnavailable => f.write_str(
-                "oxideav-cook: backend frame walk reached the §3 spectral-VLC step; \
-                 the seven codebooks' code/length bytes are runtime-built in BSS \
-                 and not in the file image (spec/05 §3.2 — docs-gap #1775)",
+            Error::EnvelopeValueTreeUnavailable => f.write_str(
+                "oxideav-cook: frame walk stopped at the field-5 envelope values; the \
+                 31-entry envelope VLC tree family (backend+0x44c8) is not among the \
+                 staged tables (spec/05 §1.1)",
+            ),
+            Error::CouplingIndexTreeUnavailable => f.write_str(
+                "oxideav-cook: coupling control selected the VLC branch; the \
+                 coupling-index VLC tree contents are not among the staged tables \
+                 (spec/05 §4.1)",
+            ),
+            Error::FrameLayoutUnknown {
+                channels,
+                subband_count,
+                samples_per_frame,
+            } => write!(
+                f,
+                "oxideav-cook: no traced frame layout for flavor geometry \
+                 (channels {channels}, subbands {subband_count}, {samples_per_frame} \
+                 samples/frame); only the validated stereo 32-subband 1024-line \
+                 family is traced"
+            ),
+            Error::FrameCursorOutOfRange { got, head, limit } => write!(
+                f,
+                "oxideav-cook: injected envelope cursor {got} is outside the frame \
+                 (head ends at {head}, bit limit {limit})"
+            ),
+            Error::CouplingMapMismatch {
+                start_band,
+                subbands_per_index,
+                coupling_bands,
+                band_count,
+            } => write!(
+                f,
+                "oxideav-cook: coupling map (start {start_band}, {subbands_per_index} \
+                 subbands/index, {coupling_bands} coupling bands) does not tile the \
+                 band count {band_count}"
             ),
             Error::IndexRecipOutOfRange { got } => write!(
                 f,

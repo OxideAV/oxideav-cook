@@ -209,27 +209,24 @@ fn synthesized_call_validates_buffers_before_backend_state() {
     assert_eq!(backend.buffered(), 0);
 }
 
-/// Documents a **real-data finding** against the `spec/05` §1.1 reading
-/// (recorded docs-gap): the leading 6-bit field is described as carrying
-/// `segment_count + 6` (the worker forms `field − 6`), yet **12 of the
-/// 144** validated call heads carry a field `< 6`, which biases negative
-/// under that reading (packet 0 opens with the well-formed raw `29`, but
-/// packets 4 and 5 open with raw `4`). Either the negative-bias
-/// semantics (e.g. a signed loop bound treating `< 6` as an empty/flat
-/// envelope) or the field's meaning needs a docs clarification; until
-/// then `gain::read_segment_count` keeps the typed underflow rejection
-/// and the synthesis path makes no §1.1 assertion.
+/// The real-data finding that foreshadowed the round-9 §1.1 withdrawal:
+/// under the old "6-bit segment count biased −6" reading, 12 of the 144
+/// validated call heads biased negative. Re-read under the pinned §0.2
+/// layout the head bits are the 1-bit sub-packet flag and the coupling
+/// mode flag — and the wire statistics fit that reading instead: the
+/// sub-packet flag is 0 on 139 of the 144 call heads (the traced frames
+/// all carried 0), and the coupling mode flag is genuinely mixed (107
+/// of 144 select the VLC branch, matching the trace seeing both
+/// branches on real frames).
 #[test]
-fn twelve_of_144_real_call_heads_underflow_the_pinned_gain_bias() {
+fn real_call_heads_fit_the_section02_flag_reading() {
     let payloads = collect_packet_payloads(FIXTURE);
-    let heads: Vec<u8> = payloads.iter().map(|p| p[0] >> 2).collect();
-    // Packet 0's head is the well-formed example the earlier rounds
-    // pinned (raw 29 → 23 segments under the §1.1 reading).
-    assert_eq!(heads[0], 29);
-    // Packets 4 and 5 open with raw 4 — negative under the −6 bias.
-    assert_eq!(heads[4], 4);
-    assert_eq!(heads[5], 4);
-    // Exactly 12 of the 144 real call heads underflow the bias.
-    let underflow = heads.iter().filter(|&&h| h < 6).count();
-    assert_eq!(underflow, 12);
+    let flag0: usize = payloads.iter().filter(|p| p[0] >> 7 == 0).count();
+    assert_eq!(flag0, 139, "sub-packet flag 0 on 139/144 call heads");
+    let vlc: usize = payloads.iter().filter(|p| (p[0] >> 6) & 1 == 1).count();
+    assert_eq!(vlc, 107, "coupling VLC branch on 107/144 call heads");
+    // The old §1.1 reading's contradiction, kept as the historical
+    // pointer: 12 of 144 heads read `< 6` under a top-6-bit field.
+    let old_underflow = payloads.iter().filter(|p| (p[0] >> 2) < 6).count();
+    assert_eq!(old_underflow, 12);
 }

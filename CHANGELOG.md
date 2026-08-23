@@ -8,6 +8,33 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **§0.2 pre-spectral frame walk — the round-9 wire order, end to
+  end.** `frame::read_frame_head` reads fields 1–4 (sub-packet flag,
+  coupling mode flag, `Ncoupband` fixed-width coupling indices, 6-bit
+  envelope seed); `frame::decode_frame_body` continues through the
+  field-5 envelope values (injectable — `frame::EnvelopeInjection`
+  carries a captured `v[]` + cursor, as staged for three real frames),
+  the 7-bit frame scalar, the §2.2 allocator with the round-9 budget
+  rule `budget = bit_limit − cursor`, the computed categories, the §3
+  codebook-by-category spectral read over the 20-line band geometry
+  and the §4 pan split — validated by a synthetic 93-byte stereo frame
+  shaped exactly like traced packet 2 (scalar at bits 172..179, budget
+  565, categories == the live capture, bit-exact total consumption).
+  `frame::FrameLayout` carries the per-flavor §0.2 parameters
+  (`validated_stereo()`: `Nb = 34`, `coupling_bits = 4`,
+  `Ncoupband = 16`, `M = 128` from `tables/live-frame-params.csv`;
+  `for_flavor_geometry` refuses untraced flavors) and
+  `frame::CouplingMap` makes the unpinned §4.1 coupling band range an
+  explicit input (default hypothesis `start 2 × 2 subbands = 32 + 2 =
+  34`, flagged). `FrameBitReader::skip_bits` added; the reader state
+  offsets follow the round-9 correction (`+0x47ac..+0x47b8`).
+- New typed gap/validation errors: `EnvelopeValueTreeUnavailable` (the
+  31-entry envelope VLC tree family at `backend+0x44c8` is not among
+  the staged tables — the narrowed successor of the retired
+  `SpectralCodebookBytesUnavailable`), `CouplingIndexTreeUnavailable`
+  (field 3b's VLC branch), `FrameLayoutUnknown`, `FrameCursorOutOfRange`
+  and `CouplingMapMismatch`.
+
 - **§2.2 Stage-2 refinement walk — the vendor's real-frame category
   output reproduced bit-exactly.** `category_assignment::refine_categories`
   replaces the uniform-only `refine_uniform` with the mechanism docs
@@ -33,6 +60,24 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The §1.1 "gain envelope" wire reading is withdrawn (round 9).** The
+  head worker `cook.dll!0x4b50` performs one 6-bit read and `Nb − 1`
+  VLC reads and nothing else, and the array it fills is the allocator's
+  `v[]` — there is no segment-count field and no `{position, gain
+  index}` records (this crate's own real-stream data had flagged the
+  old reading: 12 of 144 call heads biased negative under it; re-read
+  under §0.2 the head bits are the sub-packet flag and coupling mode
+  flag, and the wire statistics fit — pinned by a rewritten realstream
+  test). Removed `gain::read_segment_count`, `SEGMENT_COUNT_FIELD_BITS`,
+  `SEGMENT_COUNT_BIAS`, `Error::GainSegmentCountUnderflow`, and the old
+  `frame::decode_frame_body(frame, channels, subband_count)` /
+  `frame_body_prefix` / `FrameWalk` prefix walk. The `gain` module
+  keeps the ladder resolution and the §1.2-shaped profile primitives
+  as caller-input DSP; whether this flavor carries a time-domain gain
+  envelope at all is open (spec/05 §1.2).
+- `spectral::coupling_table_len` / `coupling_control::coupling_table_len`
+  corrected to `(1 << coupling_bits) − 1` (the round-9/10 table
+  extents; the traced width-4 indices stay `0..=14`).
 - **Subband geometry: 20 spectral lines per coded band.** The staged
   per-category vector dimensions satisfy `dim_lo × dim_hi = 20` for
   every category (`{2,2,2,4,4,5,5}` × `{10,10,10,5,5,4,4}`), so

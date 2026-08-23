@@ -306,16 +306,19 @@ impl SpectralCodebook {
 }
 
 /// Length of the per-band coupling-coefficient table for a coupling-index
-/// bit width — `Ncoup = 1 << coupling_bits` (`spec/05 §4.2`:
-/// *"`var_10 = Ncoup` is the coupling table length `(1 << coupling_bits)`"*).
+/// bit width — `Ncoup = (1 << coupling_bits) − 1` (`spec/05 §4.3`,
+/// round 9/10: the table extents read from the `0x8ee8` dispatch array
+/// are `(1 << w) − 1`, matching the observed index range `0..=14` at
+/// width 4; the earlier `1 << coupling_bits` reading is corrected).
 ///
 /// `coupling_bits` is the per-flavor coupling-index bit width
 /// (context `+0x1c`, §4.1). The result is the number of quantised
-/// rotation angles available for one coupling band.
+/// rotation angles available for one coupling band — identical to
+/// [`crate::coupling::CouplingPanWidth::table_len`] for stored widths.
 #[inline]
 #[must_use]
 pub const fn coupling_table_len(coupling_bits: u32) -> u32 {
-    1u32 << coupling_bits
+    (1u32 << coupling_bits) - 1
 }
 
 /// The mirror partner index of a coupling index `j` in a table of length
@@ -578,11 +581,11 @@ mod tests {
     }
 
     #[test]
-    fn coupling_table_len_is_power_of_two() {
-        assert_eq!(coupling_table_len(0), 1);
-        assert_eq!(coupling_table_len(1), 2);
-        assert_eq!(coupling_table_len(3), 8);
-        assert_eq!(coupling_table_len(6), 64);
+    fn coupling_table_len_is_one_below_the_power_of_two() {
+        assert_eq!(coupling_table_len(2), 3);
+        assert_eq!(coupling_table_len(3), 7);
+        assert_eq!(coupling_table_len(4), 15);
+        assert_eq!(coupling_table_len(6), 63);
     }
 
     #[test]

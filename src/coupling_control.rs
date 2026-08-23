@@ -29,7 +29,8 @@
 //!    of quantised rotation angles for one coupling band — the length of
 //!    the per-coupling-width coefficient table the §4.2 mirror-index split
 //!    reads (already exposed as [`crate::spectral::coupling_table_len`];
-//!    re-checked here as [`coupling_table_len`] for the control read).
+//!    re-checked here as [`coupling_table_len`] for the control read —
+//!    `(1 << w) − 1` per the round-9/10 table extents).
 //!
 //! ## What stays a GAP (not wired)
 //!
@@ -43,7 +44,7 @@
 //! - The **VLC coupling-index read** descends the seven §3.2 BSS codebooks
 //!   (built at init, not in the file image) — the documented blocker.
 //!   [`read_coupling_index`] performs the fixed-width branch directly and
-//!   surfaces [`Error::SpectralCodebookBytesUnavailable`] for the VLC
+//!   surfaces [`Error::CouplingIndexTreeUnavailable`] for the VLC
 //!   branch rather than guessing.
 //! - The **rotation coefficient values** (§4.3) are BSS-built (caller
 //!   input); only the mirror-index closed form is pinned (§4.2, wired in
@@ -87,15 +88,16 @@ pub enum CouplingReadMode {
     },
 }
 
-/// The length of the per-coupling-width rotation coefficient table —
-/// `Ncoup = 1 << coupling_bits` (`spec/05` §4.2, evidence #13).
+/// The length of the per-coupling-width pan-coefficient table —
+/// `Ncoup = (1 << coupling_bits) − 1` (`spec/05` §4.3, round 9/10: the
+/// extents read from the `0x8ee8` dispatch array).
 ///
 /// Identical to [`crate::spectral::coupling_table_len`]; re-exposed here
 /// for the coupling-control read where the bit width is in hand.
 #[inline]
 #[must_use]
 pub const fn coupling_table_len(coupling_bits: u32) -> u32 {
-    1u32 << coupling_bits
+    (1u32 << coupling_bits) - 1
 }
 
 /// Read the leading coupling-control flag bit and classify the per-band
@@ -134,21 +136,21 @@ pub fn read_fixed_coupling_index(reader: &mut FrameBitReader, coupling_bits: u32
 ///
 /// - [`CouplingReadMode::Fixed`] → the fixed-width
 ///   [`read_fixed_coupling_index`] (fully implemented).
-/// - [`CouplingReadMode::Vlc`] → the `cook.dll!0x3a50` walk over the §3.2
-///   BSS-built codebooks, which are not in the file image (docs-gap
-///   #1775); surfaced as [`Error::SpectralCodebookBytesUnavailable`]
+/// - [`CouplingReadMode::Vlc`] → the `cook.dll!0x3a50` walk over a
+///   coupling-index VLC tree whose contents are not among the staged
+///   tables; surfaced as [`Error::CouplingIndexTreeUnavailable`]
 ///   rather than guessed.
 ///
 /// # Errors
 ///
-/// Returns [`Error::SpectralCodebookBytesUnavailable`] for the VLC branch.
+/// Returns [`Error::CouplingIndexTreeUnavailable`] for the VLC branch.
 pub fn read_coupling_index(
     reader: &mut FrameBitReader,
     mode: CouplingReadMode,
 ) -> Result<u32, Error> {
     match mode {
         CouplingReadMode::Fixed { bits } => Ok(read_fixed_coupling_index(reader, bits)),
-        CouplingReadMode::Vlc => Err(Error::SpectralCodebookBytesUnavailable),
+        CouplingReadMode::Vlc => Err(Error::CouplingIndexTreeUnavailable),
     }
 }
 
@@ -158,7 +160,7 @@ mod tests {
 
     #[test]
     fn coupling_table_len_matches_spectral_module() {
-        for bits in 0u32..=6 {
+        for bits in 2u32..=6 {
             assert_eq!(
                 coupling_table_len(bits),
                 crate::spectral::coupling_table_len(bits)
@@ -206,17 +208,31 @@ mod tests {
     }
 
     #[test]
-    fn fixed_index_in_range_for_width() {
-        // A fixed-width read is always < Ncoup = 1 << bits, even for an
-        // all-ones payload (leading bit 0 forces fixed mode, rest 1s).
-        for bits in 1u32..=6 {
+    fn all_ones_fixed_index_is_out_of_table_range() {
+        // A fixed-width read CAN return (1 << bits) - 1, which is one
+        // past the pan table's last entry (Ncoup = (1 << bits) - 1;
+        // the traced width-4 indices stay 0..=14). The frame walk
+        // rejects it as CouplingIndexOutOfRange; here we pin the
+        // boundary arithmetic.
+        for bits in 2u32..=6 {
+            assert_eq!(coupling_table_len(bits), (1 << bits) - 1);
+        }
+    }
+
+    #[test]
+    fn fixed_index_read_is_width_bits_wide() {
+        // A fixed-width read spans exactly `bits` bits: an all-ones
+        // payload reads (1 << bits) - 1 (the one value past the pan
+        // table's range, rejected downstream by the frame walk).
+        for bits in 2u32..=6 {
             let mut frame = [0xFFu8; 8];
             frame[0] = 0x7F; // leading bit 0 (fixed mode), rest all 1s.
             let mut reader = FrameBitReader::new(&frame);
             let mode = read_coupling_mode(&mut reader, bits);
             assert_eq!(mode, CouplingReadMode::Fixed { bits });
             let j = read_coupling_index(&mut reader, mode).unwrap();
-            assert!(j < coupling_table_len(bits), "bits {bits} j {j}");
+            assert_eq!(j, (1 << bits) - 1, "bits {bits}");
+            assert_eq!(j, coupling_table_len(bits), "one past the table");
         }
     }
 
@@ -226,7 +242,7 @@ mod tests {
         let mut reader = FrameBitReader::new(&[0u8; 4]);
         assert_eq!(
             read_coupling_index(&mut reader, CouplingReadMode::Vlc).unwrap_err(),
-            Error::SpectralCodebookBytesUnavailable
+            Error::CouplingIndexTreeUnavailable
         );
     }
 
@@ -254,7 +270,7 @@ mod tests {
         let want: Vec<u32> = (0..3).map(|_| bare.read_bits(2)).collect();
         assert_eq!(got, want);
         for &j in &got {
-            assert!(j < coupling_table_len(2), "j {j} out of range");
+            assert!(j <= coupling_table_len(2), "j {j} out of field range");
         }
     }
 }

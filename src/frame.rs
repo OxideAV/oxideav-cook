@@ -1,199 +1,406 @@
 //! Backend per-frame body orchestrator (frame-syntax §0–§5).
 //!
 //! Source-of-truth:
-//! `docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §0 (the frame
-//! driver + bit reader), §1 (gain envelope), §2 (category/quant walk),
-//! §3 (spectral VLC), §4 (joint-stereo coupling) and §5 (output stage),
-//! plus `docs/audio/cook/provenance/05-cook-backend.md`.
+//! `docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §0.2 (the
+//! pre-spectral wire field order, pinned by behavioural trace on three
+//! real frames), §1 (the band-envelope array), §2 (the category walk +
+//! allocator budget rule), §3 (spectral VLC), §4 (joint-stereo
+//! coupling), plus `docs/audio/cook/provenance/09-cook-frame-read-layout.md`
+//! and the vendored `tables/frame-read-layout.csv` /
+//! `tables/live-frame-params.csv`.
 //!
-//! ## What this module does
+//! ## The §0.2 wire order (round 9)
 //!
-//! `spec/05` §0 pins the backend per-frame body as four sub-stages run
-//! in a fixed order over one sub-packet's bitstream:
+//! The order in which the backend actually consumes a frame:
 //!
-//! > *"**gain control → category/quant walk → spectral VLC dequant →
-//! > inverse transform**; … the stereo body additionally runs the
-//! > coupling split."*
+//! | # | field | width |
+//! | - | ----- | ----- |
+//! | 1 | sub-packet flag | 1 |
+//! | 2 | coupling-control mode flag (stereo) | 1 |
+//! | 3 | coupling index × `Ncoupband` | `coupling_bits` fixed **or** VLC |
+//! | 4 | envelope seed | 6 |
+//! | 5 | envelope value × `Nb − 1` | VLC (31-entry tree family) |
+//! | 6 | frame scalar | 7 |
+//! | — | bit-allocation call (no bits): `budget = bit_limit − cursor` | |
+//! | 7 | spectral symbols + out-of-band signs | VLC / 1 |
 //!
-//! This module assembles the **statically-pinned** prefix of that walk
-//! into a single orchestrated entry point that mirrors the binary's
-//! frame body, driving each stage off the modules already in this crate:
+//! > **Round-9 correction.** Earlier revisions of this walk read the
+//! > frame head as a §1.1 *time-domain gain envelope* (a 6-bit segment
+//! > count biased −6, then per-segment records). The live trace
+//! > withdrew that reading: the head worker performs one 6-bit read and
+//! > `Nb − 1` VLC reads and nothing else, and its output buffer is the
+//! > allocator's per-band value array `v[]`. Whether this flavor
+//! > carries a time-domain gain envelope at all is open (spec/05 §1.2).
 //!
-//! 1. **Gain envelope (§1).** Reads the leading 6-bit segment-count
-//!    field ([`crate::gain::read_segment_count`]) from the frame bit
-//!    reader. The per-segment record reads (position + gain index) then
-//!    descend the VLC walk — a §3.2 BSS GAP (see below).
-//! 2. **Subband geometry (§2.1).** Builds the band → coefficient-range
-//!    map ([`crate::subband::SubbandGeometry`]) the dequant walk and the
-//!    coupling split both consume.
-//! 3. **Spectral VLC dequant (§3).** Each coded band reads vector VLC
-//!    symbols from one of the seven codebooks. The codebook *contents*
-//!    (per-symbol code/length bytes) — once the §3.2 file-image GAP —
-//!    were **recovered** and are now vendored and wired
-//!    ([`crate::codebook`] / [`crate::spectral_decode`]); given a
-//!    per-band category list the §3 read runs to completion
-//!    ([`crate::frame_decode::decode_spectrum`]). What is **not** pinned
-//!    by `spec/05` is the *pre-spectral read layout* that reaches §3 on a
-//!    real frame: which recovered codebook the §1.2 gain-index and §2.2
-//!    per-band quant-index VLC reads select, and how the
-//!    category-assignment value array `v[]` is formed from the bitstream.
-//!    So the walk cannot position the reader at the §3 data from the
-//!    frame head and stops there, surfacing
-//!    [`crate::Error::SpectralCodebookBytesUnavailable`] (the variant
-//!    name kept for compatibility; it now denotes the read-layout gap,
-//!    not a missing-bytes gap).
+//! ## What the walk runs vs where it stops
 //!
-//! The orchestrator is therefore a *driver to the documented blocker*:
-//! it performs every stage the trace pins statically and reports exactly
-//! the sub-step where the unpinned per-band read layout is required,
-//! rather than guessing it. Callers that already hold the post-gain
-//! reader position and a category list run the whole §3→§5 chain through
-//! [`crate::frame_decode::decode_frame_spectrum`] /
-//! [`crate::frame_decode::decode_frame_spectrum_assigned`].
+//! [`read_frame_head`] consumes fields 1–4 (the fixed-width prefix plus
+//! the fixed-branch coupling indices). Two wire reads remain gated on
+//! **unstaged VLC tree contents**:
 //!
-//! ## Post-entropy reconstruction (downstream of the blocker)
+//! - field 3's VLC branch (coupling mode flag = 1) — the coupling-index
+//!   tree ([`crate::Error::CouplingIndexTreeUnavailable`]);
+//! - field 5 — the `Nb − 1` envelope values, read through a separate
+//!   **31-entry tree family** at `backend+0x44c8` (tree `max(0, k−3)`
+//!   for symbol `k`) whose per-symbol codes are **not** among the
+//!   staged tables ([`crate::Error::EnvelopeValueTreeUnavailable`]).
 //!
-//! The read-layout blocker gates only *reaching* the entropy read from
-//! the frame head. Everything from the §3 read onward — given a category
-//! list — is wired: the dequant assembly (§3.1), the per-band fill over
-//! the §2.1 subband geometry, and the §4 stereo coupling split are pinned
-//! statically. [`reconstruct_frame_spectrum`] ties those into a single
-//! **post-entropy → iMDCT input** stage: given the entropy-decoded per-band
-//! inputs (the decoded values + signs, and the recovered §4.3 coupling
-//! `coef` table, supplied by the caller) it produces one
-//! [`FrameSpectrum`] — a mono spectrum or a stereo [`StereoSpectra`] pair —
-//! the iMDCT kernel would consume. The reconstruction arithmetic lives in
-//! [`crate::reconstruct`]; this module routes it by channel count.
+//! [`decode_frame_body`] therefore takes an optional
+//! [`EnvelopeInjection`] — the caller-supplied `v[]` **and** the bit
+//! cursor where field 6 begins (both captured for three real frames in
+//! `tables/live-frame-params.csv` / `live-frame-allocator-io.csv`) — and
+//! runs the rest of the frame: the 7-bit scalar, the §2.2 allocator
+//! (`budget = bit_limit − cursor`, the round-9 budget rule) computing
+//! the per-band categories, the §3 codebook-by-category spectral read,
+//! and (for stereo) the §4 pan split. Without an injection it stops at
+//! field 5 with the typed envelope-tree gap.
 //!
-//! ## What stays a GAP (not wired)
+//! ## Per-flavor layout inputs
 //!
-//! - The **pre-spectral read layout** that reaches §3 on a real frame:
-//!   which recovered codebook the §1.2 gain-index / §2.2 quant-index VLC
-//!   reads select, and how the category-assignment value array `v[]` is
-//!   formed from the bitstream — `spec/05` pins neither. This is the
-//!   sub-step the walk stops at.
-//! - The §2.2 category-*assignment* bit-allocation loop is itself
-//!   **recovered and wired** ([`crate::category_assignment`]); it is the
-//!   `v[]` **input** to it that the frame head does not pin.
-//! - The iMDCT kernel (§5, the `0xa1b0` rotation table) is a recorded
-//!   spec/01 §6 GAP; the recovered N=1024 window/twiddles feed the
-//!   canonical transform ([`crate::imlt_direct`], [`crate::Synthesizer`]).
+//! [`FrameLayout`] carries the per-stream §0.2 parameters. For the
+//! validated flavor (record 21/22: stereo 44.1 kHz, 1024-line frames,
+//! geometry `subband_count = 32`) the traced values are `Nb = 34`,
+//! `coupling_bits = 4`, `Ncoupband = 16`, `M = 128`
+//! ([`FrameLayout::validated_stereo`], from `live-frame-params`). The
+//! §4.1 coupling **band mapping** (which subbands each coupling index
+//! covers) is *not* pinned; [`CouplingMap`] makes it an explicit caller
+//! input. The consistency `2 + 16 × 2 = 34` (two uncoupled low bands,
+//! sixteen coupling bands of two subbands) fits every traced number and
+//! is the documented default hypothesis — flagged, not fact.
 //!
 //! ## Wall-respect note
 //!
-//! Every behavioural fact here is anchored to `spec/05` §0–§4; the stage
-//! order and the band → line geometry are the trace's own. No per-band
-//! read layout is guessed — the walk stops at the unpinned sub-step.
+//! The wire order, widths and reader primitives are the staged
+//! `frame-read-layout` facts; the budget rule and `M` are the staged
+//! live-frame facts; the envelope-tree and coupling-tree contents are
+//! typed gaps, never guessed. The per-band reconstruction gain (how the
+//! §1–§2 "per-band gain" derives from `v[b]`) is likewise a caller
+//! input ([`decode_frame_body`]'s `band_gains`), not fabricated.
 
 use crate::{
     bitreader::FrameBitReader,
-    gain::read_segment_count,
+    category_assignment::assign_categories,
+    coupling::CouplingPanWidth,
+    coupling_control::{read_coupling_mode, read_fixed_coupling_index, CouplingReadMode},
+    frame_decode::{decode_frame_spectrum, DecodedSpectrum, FrameCoupling},
     reconstruct::{decouple_stereo, reconstruct_spectrum, BandReconstruction, StereoSpectra},
+    spectral_decode::BandCategory,
     subband::SubbandGeometry,
     Error,
 };
 
-/// The decode progress one frame-body walk reached before the unpinned
-/// pre-spectral read-layout blocker.
-///
-/// Returned by [`decode_frame_body`] on the real-decode path: it carries
-/// the statically-pinned state assembled up to the §3 spectral-VLC
-/// blocker so a consumer (or a future Validator round that dumps the BSS
-/// codebooks) can resume exactly where the file-image facts run out.
+/// The per-stream §0.2 frame-layout parameters the walk consumes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameWalk {
-    /// Gain-envelope segment count read at the top of the frame (§1.1).
-    /// The per-segment records themselves are VLC-gated (§3.2 GAP), so
-    /// only the count is recovered before the blocker.
-    pub gain_segment_count: u32,
-    /// Per-stream subband geometry (§2.1) — the band → coefficient-range
-    /// map the dequant walk and coupling split consume.
-    pub subband_geometry: SubbandGeometry,
-    /// Total coded spectral lines across all subbands
-    /// (`subband_geometry.total_coded_lines()`), the number of
-    /// coefficients the §3 dequant walk would fill.
-    pub total_coded_lines: u32,
-    /// Bits consumed from the frame bitstream up to the blocker.
+pub struct FrameLayout {
+    /// Channel count (1 or 2); the coupling control (fields 2–3) exists
+    /// only in the stereo body.
+    pub channels: u16,
+    /// The per-flavor coupling-index bit width (context `+0x1c`; also
+    /// selects the §4.3 pan table).
+    pub coupling_bits: u32,
+    /// Coupling bands per frame (`Ncoupband`; 16 on the traced flavor).
+    pub coupling_band_count: u32,
+    /// The allocator band count `Nb` (decode-state `+0x20`; 34 live).
+    pub band_count: u32,
+    /// The Stage-2 refinement bound `M` (decode-state `+0x28`; 128
+    /// live, pinned by replay).
+    pub refinement_bound: u32,
+    /// The §4.1 coupling band mapping (unpinned — caller input).
+    pub coupling_map: CouplingMap,
+}
+
+/// The §4.1 coupling band → subband mapping (a recorded docs question:
+/// the coupling band *range* was not pinned by the round-9 trace).
+///
+/// Coupling band `k` covers `subbands_per_index` consecutive subbands
+/// starting at `start_band + k × subbands_per_index`; subbands below
+/// `start_band` are outside the coupling split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CouplingMap {
+    /// First coupled subband.
+    pub start_band: u32,
+    /// Subbands covered per coupling index.
+    pub subbands_per_index: u32,
+}
+
+impl FrameLayout {
+    /// The traced layout of the validated flavor (records 21/22 —
+    /// stereo 44.1 kHz, 1024-line frames): `coupling_bits = 4`,
+    /// `Ncoupband = 16`, `Nb = 34`, `M = 128`
+    /// (`tables/live-frame-params.csv`, provenance/09), with the
+    /// documented default [`CouplingMap`] hypothesis
+    /// (`start_band = 2`, two subbands per index: `2 + 16 × 2 = 34`).
+    #[must_use]
+    pub fn validated_stereo() -> Self {
+        FrameLayout {
+            channels: 2,
+            coupling_bits: 4,
+            coupling_band_count: 16,
+            band_count: 34,
+            refinement_bound: 128,
+            coupling_map: CouplingMap {
+                start_band: 2,
+                subbands_per_index: 2,
+            },
+        }
+    }
+
+    /// The layout for a stream's flavor geometry, when the traced
+    /// per-flavor §0.2 parameters are known for it.
+    ///
+    /// Only the validated flavor family (stereo, `subband_count = 32`,
+    /// 1024 samples per frame — records 21/22) has traced values; any
+    /// other geometry returns [`Error::FrameLayoutUnknown`] rather than
+    /// a fabricated layout.
+    pub fn for_flavor_geometry(
+        channels: u16,
+        subband_count: u32,
+        samples_per_frame: u32,
+    ) -> Result<Self, Error> {
+        if channels == 2 && subband_count == 32 && samples_per_frame == 1024 {
+            return Ok(Self::validated_stereo());
+        }
+        Err(Error::FrameLayoutUnknown {
+            channels,
+            subband_count,
+            samples_per_frame,
+        })
+    }
+
+    /// The §4.3 pan-table selector for this layout's coupling width.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::CouplingPanWidthUnsupported`] when `coupling_bits` is
+    /// outside the stored `2..=6`.
+    pub fn pan_width(&self) -> Result<CouplingPanWidth, Error> {
+        CouplingPanWidth::from_bits(self.coupling_bits)
+    }
+}
+
+/// The fixed-width §0.2 frame head — fields 1–4 of the wire order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameHead {
+    /// Field 1 — the 1-bit sub-packet flag (`0` in every traced frame;
+    /// semantics NOT established, spec/05 §0.2).
+    pub subpacket_flag: u32,
+    /// Fields 2–3 — the coupling control (stereo only): the resolved
+    /// read mode and, for the fixed branch, the `Ncoupband` indices.
+    pub coupling: Option<FrameHeadCoupling>,
+    /// Field 4 — the 6-bit envelope seed (stored into `v[0]` by the
+    /// envelope worker; the staged live captures show the *stored*
+    /// `v[0]` differing from the re-derived wire field, a recorded
+    /// docs question — see the crate README).
+    pub envelope_seed: u32,
+    /// Bit cursor after field 4 — where the field-5 envelope VLC
+    /// begins.
     pub bits_consumed: u32,
 }
 
-/// Walk the backend per-frame body as far as the statically-pinned
-/// frame-syntax allows, stopping at the unpinned pre-spectral read
-/// layout.
-///
-/// `frame` is one sub-packet's bitstream (the §0 frame body); `channels`
-/// and `subband_count` come from the wired [`crate::DecodeConfig`].
-///
-/// The walk:
-///
-/// 1. Reads the §1.1 gain-envelope segment count from `frame`.
-/// 2. Builds the §2.1 subband geometry for `subband_count`.
-/// 3. Cannot position the reader at the §3 spectral data and stops:
-///    [`Error::SpectralCodebookBytesUnavailable`]. The seven codebooks'
-///    bytes are recovered and wired (the §3 read runs given a category
-///    list); what `spec/05` does not pin is the pre-spectral read layout
-///    that reaches §3 on a real frame — which recovered codebook the
-///    §1.2 gain-index / §2.2 quant-index VLC reads select, and how the
-///    category-assignment `v[]` array is formed. The walk does **not**
-///    guess it.
-///
-/// This is the faithful "drive to the documented blocker" entry point:
-/// every pinned stage runs, and the precise sub-step needing the unpinned
-/// read layout is surfaced as a typed error rather than fabricated.
-///
-/// # Errors
-///
-/// - [`Error::GainSegmentCountUnderflow`] if the §1.1 segment-count
-///   field biases negative.
-/// - [`Error::CookieZeroSubbandCount`] if `subband_count == 0`.
-/// - [`Error::BitAllocAxisOutOfRange`] if `subband_count` exceeds the
-///   51-entry subband LUT.
-/// - [`Error::SpectralCodebookBytesUnavailable`] — the read-layout
-///   blocker; always returned for a non-trivial stream, after the pinned
-///   prefix has run.
-pub fn decode_frame_body(
-    frame: &[u8],
-    channels: u16,
-    subband_count: u32,
-) -> Result<FrameWalk, Error> {
-    // Run the statically-pinned prefix (§1.1 gain count + §2.1 subband
-    // geometry); any stage-1/2 error surfaces here. If the prefix
-    // succeeds the walk has reached the §3 spectral-VLC dequant step:
-    // the codebooks are recovered, but the pre-spectral read layout that
-    // positions the reader there (§1.2 gain-index / §2.2 quant-index VLC
-    // codebook selection, and the `v[]` formation the category-assignment
-    // loop consumes) is not pinned by spec/05 — stop precisely here
-    // rather than guess it.
-    let _prefix = frame_body_prefix(frame, channels, subband_count)?;
-    Err(Error::SpectralCodebookBytesUnavailable)
+/// The stereo coupling control of a frame head (fields 2–3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameHeadCoupling {
+    /// The mode flag's resolved read mode (fixed-width vs VLC).
+    pub mode: CouplingReadMode,
+    /// One coupling index per coupling band (fixed branch only; the VLC
+    /// branch is gated on the unstaged coupling tree).
+    pub indices: Vec<u32>,
 }
 
-/// Walk the pinned prefix and return the assembled [`FrameWalk`] state up
-/// to (but not raising) the read-layout blocker.
-///
-/// Identical to [`decode_frame_body`] except it returns the
-/// [`FrameWalk`] instead of the [`Error::SpectralCodebookBytesUnavailable`]
-/// terminator, so callers (and tests) can inspect the statically-pinned
-/// state the walk recovered before the documented blocker.
+/// Read the §0.2 fixed-width frame head — fields 1–4 — from the start
+/// of one sub-packet's bitstream.
 ///
 /// # Errors
 ///
-/// Same as [`decode_frame_body`] minus the terminal
-/// [`Error::SpectralCodebookBytesUnavailable`].
-pub fn frame_body_prefix(
+/// - [`Error::CouplingIndexTreeUnavailable`] when the coupling mode
+///   flag selects the VLC branch (field 3b): the coupling-index VLC
+///   tree contents are not among the staged tables.
+/// - [`Error::CouplingIndexOutOfRange`] when a fixed-width coupling
+///   index reaches `Ncoup = (1 << coupling_bits) − 1` (the pan table
+///   holds `Ncoup` entries and the traced indices stay `0..=14` at
+///   width 4).
+pub fn read_frame_head(
+    reader: &mut FrameBitReader<'_>,
+    layout: &FrameLayout,
+) -> Result<FrameHead, Error> {
+    let subpacket_flag = reader.read_bits(1);
+    let coupling = if layout.channels == 2 {
+        let mode = read_coupling_mode(reader, layout.coupling_bits);
+        let indices = match mode {
+            CouplingReadMode::Fixed { bits } => {
+                let ncoup = (1u32 << layout.coupling_bits) - 1;
+                let mut indices = Vec::with_capacity(layout.coupling_band_count as usize);
+                for _ in 0..layout.coupling_band_count {
+                    let j = read_fixed_coupling_index(reader, bits);
+                    if j >= ncoup {
+                        return Err(Error::CouplingIndexOutOfRange { got: j, ncoup });
+                    }
+                    indices.push(j);
+                }
+                indices
+            }
+            CouplingReadMode::Vlc => return Err(Error::CouplingIndexTreeUnavailable),
+        };
+        Some(FrameHeadCoupling { mode, indices })
+    } else {
+        None
+    };
+    let envelope_seed = reader.read_bits(6);
+    Ok(FrameHead {
+        subpacket_flag,
+        coupling,
+        envelope_seed,
+        bits_consumed: reader.bit_cursor(),
+    })
+}
+
+/// A caller-supplied stand-in for the field-5 envelope VLC read — the
+/// per-band value array `v[]` and the bit cursor where field 6 (the
+/// 7-bit frame scalar) begins.
+///
+/// The `Nb − 1` envelope values are read through the 31-entry VLC tree
+/// family at `backend+0x44c8` whose contents are **not** among the
+/// staged tables; for the three traced frames both the values and the
+/// post-envelope cursor were captured live
+/// (`tables/live-frame-allocator-io.csv` / `live-frame-params.csv`:
+/// the allocator cursor is `bit_limit − alloc_budget`, and field 6
+/// occupies the 7 bits before it).
+#[derive(Debug, Clone)]
+pub struct EnvelopeInjection<'a> {
+    /// The per-band value array `v[0..Nb]` the envelope worker stored.
+    pub values: &'a [i32],
+    /// Bit cursor at the start of field 6 (the 7-bit frame scalar) —
+    /// `bit_limit − alloc_budget − 7` for a captured frame.
+    pub cursor_at_frame_scalar: u32,
+}
+
+/// One fully-walked §0.2 frame body (through the spectral stage).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameBody {
+    /// The fixed-width head (fields 1–4).
+    pub head: FrameHead,
+    /// The per-band envelope value array `v[]` (field 4 seed + field 5
+    /// values — injected; see [`EnvelopeInjection`]).
+    pub envelope: Vec<i32>,
+    /// Field 6 — the 7-bit frame scalar (semantics NOT established;
+    /// `109 / 89 / 103` on the traced frames).
+    pub frame_scalar: u32,
+    /// The §2.2 allocator budget — `bit_limit − cursor` at the
+    /// allocator call (the round-9 budget rule).
+    pub budget: i32,
+    /// The computed per-band categories (`0..=7`).
+    pub categories: Vec<u8>,
+    /// The §3 spectral read routed through the §4 split (stereo) or
+    /// straight (mono).
+    pub spectrum: DecodedSpectrum,
+    /// Bits consumed by the whole walk (head + scalar + spectral).
+    pub bits_consumed: u32,
+}
+
+/// Walk one §0.2 frame body end to end: head (fields 1–4), the
+/// envelope (field 5 — injected, see below), the 7-bit scalar (field
+/// 6), the §2.2 allocator (`budget = bit_limit − cursor`), the §3
+/// codebook-by-category spectral read and (stereo) the §4 pan split.
+///
+/// `envelope` supplies the field-5 stand-in; `None` stops the walk at
+/// the envelope-tree gap. `band_gains` is the per-band reconstruction
+/// gain (`&[1.0]` for unity — the `v[b]` → gain law is a recorded docs
+/// question, so it is a caller input).
+///
+/// # Errors
+///
+/// - [`Error::EnvelopeValueTreeUnavailable`] when `envelope` is `None` —
+///   the 31-entry envelope VLC tree family is not among the staged
+///   tables.
+/// - [`Error::SpectrumBandCountMismatch`] when the injected `values`
+///   length is not `Nb`.
+/// - [`Error::FrameCursorOutOfRange`] when the injected cursor lies
+///   before the head or past the bit limit.
+/// - [`Error::CouplingMapMismatch`] when the layout's coupling map does
+///   not tile `Nb` (`start + Ncoupband × per != Nb`).
+/// - any error [`read_frame_head`] or the spectral decode raises.
+pub fn decode_frame_body(
     frame: &[u8],
-    channels: u16,
-    subband_count: u32,
-) -> Result<FrameWalk, Error> {
-    let _ = channels;
+    layout: &FrameLayout,
+    envelope: Option<&EnvelopeInjection<'_>>,
+    band_gains: &[f32],
+) -> Result<FrameBody, Error> {
     let mut reader = FrameBitReader::new(frame);
-    let gain_segment_count = read_segment_count(&mut reader)?;
-    let subband_geometry = SubbandGeometry::new(subband_count)?;
-    let total_coded_lines = subband_geometry.total_coded_lines();
-    Ok(FrameWalk {
-        gain_segment_count,
-        subband_geometry,
-        total_coded_lines,
+    let head = read_frame_head(&mut reader, layout)?;
+    let Some(inj) = envelope else {
+        return Err(Error::EnvelopeValueTreeUnavailable);
+    };
+    if inj.values.len() as u32 != layout.band_count {
+        return Err(Error::SpectrumBandCountMismatch {
+            subband_count: layout.band_count,
+            got: inj.values.len(),
+        });
+    }
+    if inj.cursor_at_frame_scalar < head.bits_consumed
+        || inj.cursor_at_frame_scalar + 7 > reader.bit_limit()
+    {
+        return Err(Error::FrameCursorOutOfRange {
+            got: inj.cursor_at_frame_scalar,
+            head: head.bits_consumed,
+            limit: reader.bit_limit(),
+        });
+    }
+    // Field 5 — the envelope VLC region — is skipped via the injected
+    // cursor (its width is frame-dependent; the values are supplied).
+    reader.skip_bits(inj.cursor_at_frame_scalar - reader.bit_cursor());
+    // Field 6 — the 7-bit frame scalar.
+    let frame_scalar = reader.read_bits(7);
+    // The §2.2 allocator: budget = bit_limit − cursor, no bits consumed.
+    let budget = reader.bit_limit() as i32 - reader.bit_cursor() as i32;
+    let assignment = assign_categories(inj.values, budget, layout.refinement_bound);
+    let categories = assignment.categories;
+    let band_cats: Vec<BandCategory> = categories
+        .iter()
+        .map(|&c| BandCategory::from_raw(c))
+        .collect::<Result<_, _>>()?;
+    // §3 spectral read over the Nb-band geometry, routed through §4.
+    let geometry = SubbandGeometry::new(layout.band_count)?;
+    let spectrum = if layout.channels == 2 {
+        let coupling_head = head.coupling.as_ref().ok_or(Error::StereoCouplingMissing)?;
+        let map = layout.coupling_map;
+        let mapped = map.start_band + layout.coupling_band_count * map.subbands_per_index;
+        if map.subbands_per_index == 0 || mapped != layout.band_count {
+            return Err(Error::CouplingMapMismatch {
+                start_band: map.start_band,
+                subbands_per_index: map.subbands_per_index,
+                coupling_bands: layout.coupling_band_count,
+                band_count: layout.band_count,
+            });
+        }
+        // Expand one index per coupling band to one per subband.
+        let expanded: Vec<u32> = (map.start_band..layout.band_count)
+            .map(|b| {
+                coupling_head.indices[((b - map.start_band) / map.subbands_per_index) as usize]
+            })
+            .collect();
+        let coupling = FrameCoupling {
+            coupling_bands: map.start_band..layout.band_count,
+            indices: &expanded,
+            pan_width: layout.pan_width()?,
+        };
+        decode_frame_spectrum(
+            &mut reader,
+            &geometry,
+            &band_cats,
+            band_gains,
+            2,
+            Some(&coupling),
+        )?
+    } else {
+        decode_frame_spectrum(&mut reader, &geometry, &band_cats, band_gains, 1, None)?
+    };
+    Ok(FrameBody {
+        head,
+        envelope: inj.values.to_vec(),
+        frame_scalar,
+        budget,
+        categories,
+        spectrum,
         bits_consumed: reader.bit_cursor(),
     })
 }
@@ -294,86 +501,295 @@ mod tests {
     use super::*;
     use crate::category::CategoryIndex;
 
-    // A frame whose leading 6-bit field is `001000` = 8 → 8 − 6 = 2
-    // gain segments (a well-formed, non-flat envelope head).
-    fn frame_two_segments() -> [u8; 8] {
-        // top 6 bits = 001000 = 8.
-        [0b0010_0000, 0, 0, 0, 0, 0, 0, 0]
+    use crate::codebook::spectral_huffman;
+    use crate::spectral_decode::{codebook_for_category, compose_symbol};
+    use crate::tables::{live_frame_allocator_io, live_frame_params};
+
+    /// Pack `(value, nbits)` fields MSB-first into a byte buffer of
+    /// exactly `len` bytes (zero-padded).
+    fn pack_to(fields: &[(u32, u32)], len: usize) -> Vec<u8> {
+        let mut bits: Vec<u8> = Vec::new();
+        for &(v, n) in fields {
+            for b in (0..n).rev() {
+                bits.push(((v >> b) & 1) as u8);
+            }
+        }
+        assert!(bits.len() <= len * 8, "fields overflow the frame");
+        let mut bytes = vec![0u8; len];
+        for (i, &bit) in bits.iter().enumerate() {
+            if bit != 0 {
+                bytes[i / 8] |= 0x80 >> (i % 8);
+            }
+        }
+        bytes
+    }
+
+    fn stereo_layout() -> FrameLayout {
+        FrameLayout::validated_stereo()
     }
 
     #[test]
-    fn prefix_recovers_gain_count_and_geometry() {
-        let frame = frame_two_segments();
-        let walk = frame_body_prefix(&frame, 2, 20).unwrap();
-        assert_eq!(walk.gain_segment_count, 2);
-        assert_eq!(walk.subband_geometry.subband_count(), 20);
+    fn layout_for_flavor_geometry_matches_only_the_traced_family() {
+        let l = FrameLayout::for_flavor_geometry(2, 32, 1024).unwrap();
+        assert_eq!(l, FrameLayout::validated_stereo());
+        assert_eq!(l.band_count, 34);
+        assert_eq!(l.coupling_bits, 4);
+        assert_eq!(l.coupling_band_count, 16);
+        assert_eq!(l.refinement_bound, 128);
+        // The default coupling-map hypothesis tiles Nb exactly.
         assert_eq!(
-            walk.total_coded_lines,
-            walk.subband_geometry.total_coded_lines()
+            l.coupling_map.start_band + l.coupling_band_count * l.coupling_map.subbands_per_index,
+            l.band_count
         );
-        // The gain segment-count read consumed exactly 6 bits.
-        assert_eq!(walk.bits_consumed, 6);
-    }
-
-    #[test]
-    fn decode_stops_at_documented_read_layout_blocker() {
-        // The full walk runs the pinned prefix then surfaces the
-        // read-layout blocker — not NotImplemented, not a guess.
-        let frame = frame_two_segments();
-        assert_eq!(
-            decode_frame_body(&frame, 2, 20).unwrap_err(),
-            Error::SpectralCodebookBytesUnavailable
-        );
-    }
-
-    #[test]
-    fn decode_surfaces_gain_underflow_before_blocker() {
-        // A raw segment-count field < 6 biases negative — that §1.1 error
-        // fires before the §3 blocker is reached.
-        let frame = [0u8; 8]; // top 6 bits = 0 → bias -6 → underflow.
+        // Untraced geometries are refused, not fabricated.
         assert!(matches!(
-            decode_frame_body(&frame, 2, 20),
-            Err(Error::GainSegmentCountUnderflow { raw: 0 })
+            FrameLayout::for_flavor_geometry(1, 32, 1024),
+            Err(Error::FrameLayoutUnknown { .. })
+        ));
+        assert!(matches!(
+            FrameLayout::for_flavor_geometry(2, 20, 512),
+            Err(Error::FrameLayoutUnknown { .. })
         ));
     }
 
     #[test]
-    fn decode_rejects_zero_subband_count() {
-        let frame = frame_two_segments();
-        assert_eq!(
-            decode_frame_body(&frame, 2, 0).unwrap_err(),
-            Error::CookieZeroSubbandCount
-        );
-    }
-
-    #[test]
-    fn prefix_band_geometry_tiles() {
-        // The recovered geometry tiles its coefficient range gap-free —
-        // the band → line map the §3 dequant walk would consume.
-        let frame = frame_two_segments();
-        let walk = frame_body_prefix(&frame, 1, 12).unwrap();
-        let geom = &walk.subband_geometry;
-        let mut expected = geom.start_line(0).unwrap();
-        for band in 0..geom.subband_count() {
-            let r = geom.line_range(band).unwrap();
-            assert_eq!(r.start, expected);
-            expected = r.end;
+    fn head_reads_the_wire_order_fields() {
+        // §0.2 fields 1-4: flag, coupling mode 0 (fixed), sixteen 4-bit
+        // indices, 6-bit seed — 1 + 1 + 64 + 6 = 72 bits.
+        let layout = stereo_layout();
+        let mut fields = vec![(0u32, 1), (0u32, 1)];
+        let want_indices: Vec<u32> = (0..16u32).map(|k| (k * 5) % 15).collect();
+        for &j in &want_indices {
+            fields.push((j, 4));
         }
+        fields.push((23, 6)); // seed
+        let frame = pack_to(&fields, 93);
+        let mut reader = FrameBitReader::new(&frame);
+        let head = read_frame_head(&mut reader, &layout).unwrap();
+        assert_eq!(head.subpacket_flag, 0);
+        let coupling = head.coupling.as_ref().unwrap();
+        assert!(matches!(
+            coupling.mode,
+            crate::coupling_control::CouplingReadMode::Fixed { bits: 4 }
+        ));
+        assert_eq!(coupling.indices, want_indices);
+        assert_eq!(head.envelope_seed, 23);
+        assert_eq!(head.bits_consumed, 72);
+        assert_eq!(reader.bit_cursor(), 72);
     }
 
     #[test]
-    fn mono_and_stereo_reach_same_blocker() {
-        // The §4 coupling split is past the §3 blocker, so mono and
-        // stereo both stop at the same documented sub-step.
-        let frame = frame_two_segments();
+    fn head_vlc_coupling_branch_surfaces_the_tree_gap() {
+        let layout = stereo_layout();
+        let frame = pack_to(&[(0, 1), (1, 1)], 93); // mode flag = 1 → VLC.
+        let mut reader = FrameBitReader::new(&frame);
         assert_eq!(
-            decode_frame_body(&frame, 1, 20).unwrap_err(),
-            Error::SpectralCodebookBytesUnavailable
+            read_frame_head(&mut reader, &layout).unwrap_err(),
+            Error::CouplingIndexTreeUnavailable
         );
+    }
+
+    #[test]
+    fn head_rejects_out_of_table_fixed_index() {
+        // A 4-bit index of 15 is one past the w=4 pan table (Ncoup 15).
+        let layout = stereo_layout();
+        let mut fields = vec![(0u32, 1), (0u32, 1)];
+        fields.push((15, 4));
+        let frame = pack_to(&fields, 93);
+        let mut reader = FrameBitReader::new(&frame);
         assert_eq!(
-            decode_frame_body(&frame, 2, 20).unwrap_err(),
-            Error::SpectralCodebookBytesUnavailable
+            read_frame_head(&mut reader, &layout).unwrap_err(),
+            Error::CouplingIndexOutOfRange { got: 15, ncoup: 15 }
         );
+    }
+
+    #[test]
+    fn mono_head_has_no_coupling_control() {
+        // The coupling control exists only in the stereo body (§0.2):
+        // a mono layout reads flag then seed directly.
+        let layout = FrameLayout {
+            channels: 1,
+            coupling_bits: 4,
+            coupling_band_count: 0,
+            band_count: 34,
+            refinement_bound: 128,
+            coupling_map: CouplingMap {
+                start_band: 0,
+                subbands_per_index: 1,
+            },
+        };
+        let frame = pack_to(&[(1, 1), (42, 6)], 93);
+        let mut reader = FrameBitReader::new(&frame);
+        let head = read_frame_head(&mut reader, &layout).unwrap();
+        assert_eq!(head.subpacket_flag, 1);
+        assert!(head.coupling.is_none());
+        assert_eq!(head.envelope_seed, 42);
+        assert_eq!(head.bits_consumed, 7);
+    }
+
+    #[test]
+    fn body_without_injection_stops_at_the_envelope_tree_gap() {
+        let layout = stereo_layout();
+        let frame = pack_to(&[(0, 1), (0, 1)], 93);
+        assert_eq!(
+            decode_frame_body(&frame, &layout, None, &[1.0]).unwrap_err(),
+            Error::EnvelopeValueTreeUnavailable
+        );
+    }
+
+    #[test]
+    fn injected_cursor_bounds_are_enforced() {
+        let layout = stereo_layout();
+        let frame = pack_to(&[(0, 1), (0, 1)], 93);
+        let v = vec![10i32; 34];
+        // Before the head end (72 bits).
+        let inj = EnvelopeInjection {
+            values: &v,
+            cursor_at_frame_scalar: 10,
+        };
+        assert!(matches!(
+            decode_frame_body(&frame, &layout, Some(&inj), &[1.0]),
+            Err(Error::FrameCursorOutOfRange { got: 10, .. })
+        ));
+        // Past the bit limit.
+        let inj = EnvelopeInjection {
+            values: &v,
+            cursor_at_frame_scalar: 744,
+        };
+        assert!(matches!(
+            decode_frame_body(&frame, &layout, Some(&inj), &[1.0]),
+            Err(Error::FrameCursorOutOfRange { got: 744, .. })
+        ));
+        // Wrong band count.
+        let short = vec![10i32; 33];
+        let inj = EnvelopeInjection {
+            values: &short,
+            cursor_at_frame_scalar: 172,
+        };
+        assert!(matches!(
+            decode_frame_body(&frame, &layout, Some(&inj), &[1.0]),
+            Err(Error::SpectrumBandCountMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn coupling_map_must_tile_the_band_count() {
+        let mut layout = stereo_layout();
+        layout.coupling_map = CouplingMap {
+            start_band: 3,
+            subbands_per_index: 2,
+        }; // 3 + 32 = 35 != 34.
+        let frame = pack_to(&[(0, 1), (0, 1)], 93);
+        let v = vec![10i32; 34];
+        let inj = EnvelopeInjection {
+            values: &v,
+            cursor_at_frame_scalar: 172,
+        };
+        assert!(matches!(
+            decode_frame_body(&frame, &layout, Some(&inj), &[1.0]),
+            Err(Error::CouplingMapMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn injected_walk_decodes_a_full_synthetic_stereo_frame() {
+        // The assembled §0.2 walk end to end on a 93-byte synthetic
+        // frame shaped exactly like the traced packet 2: fields 1-4
+        // (fixed coupling), a 100-bit stand-in for the field-5 envelope
+        // VLC (values injected from the staged live capture), the 7-bit
+        // scalar at bits 172..179, the allocator at cursor 179 with the
+        // round-9 budget rule (744 - 179 = 565 — the live budget), the
+        // computed categories (== the live capture, pinned in
+        // category_assignment), the §3 spectral read and the §4 pan
+        // split.
+        let layout = stereo_layout();
+        let live = &live_frame_allocator_io()[0];
+        let params = &live_frame_params()[0];
+        assert_eq!(live.packet, 2);
+
+        let mut fields = vec![(0u32, 1), (0u32, 1)];
+        let indices: Vec<u32> = (0..16u32).map(|k| k % 15).collect();
+        for &j in &indices {
+            fields.push((j, 4));
+        }
+        fields.push((17, 6)); // the seed field the extractor re-derived.
+                              // Field 5 stand-in: 100 arbitrary bits (the injected values
+                              // replace their decode).
+        for _ in 0..100 {
+            fields.push((1, 1));
+        }
+        assert_eq!(
+            fields.iter().map(|&(_, n)| n).sum::<u32>(),
+            172,
+            "the 7-bit scalar must start at bit 172"
+        );
+        fields.push((109, 7)); // the traced frame scalar.
+
+        // Spectral section: encode each coded band's full vector group
+        // for the categories the allocator computes from (v, budget).
+        let budget = 744 - 179;
+        assert_eq!(budget, params.alloc_budget);
+        let assignment = crate::category_assignment::assign_categories(&live.values, budget, 128);
+        assert_eq!(assignment.categories, live.categories, "live cats");
+        for &c in &assignment.categories {
+            if c == 7 {
+                continue;
+            }
+            let ci = crate::category::CategoryIndex::new(c).unwrap();
+            let huffman = spectral_huffman(codebook_for_category(ci));
+            let dims = crate::spectral::category_vector_dims(ci);
+            let mut digits = vec![0u32; dims.lo as usize];
+            digits[0] = 1;
+            let first = compose_symbol(&digits, ci).unwrap();
+            fields.push(huffman.codeword(first).unwrap());
+            fields.push((0, 1)); // sign for the single non-zero digit.
+            let zero = compose_symbol(&vec![0u32; dims.lo as usize], ci).unwrap();
+            for _ in 1..dims.hi {
+                fields.push(huffman.codeword(zero).unwrap());
+            }
+        }
+        let total_bits: u32 = fields.iter().map(|&(_, n)| n).sum();
+        assert!(total_bits <= 744, "frame must fit 93 bytes ({total_bits})");
+        let frame = pack_to(&fields, 93);
+
+        let inj = EnvelopeInjection {
+            values: &live.values,
+            cursor_at_frame_scalar: 172,
+        };
+        let body = decode_frame_body(&frame, &layout, Some(&inj), &[1.0]).unwrap();
+        assert_eq!(body.head.envelope_seed, 17);
+        assert_eq!(body.head.coupling.as_ref().unwrap().indices, indices);
+        assert_eq!(body.frame_scalar, 109);
+        assert_eq!(body.budget, 565);
+        assert_eq!(body.categories, live.categories);
+        assert_eq!(body.bits_consumed, total_bits, "bit-exact consumption");
+        match &body.spectrum {
+            DecodedSpectrum::Stereo(s) => {
+                assert_eq!(s.ch0.len(), 680);
+                assert_eq!(s.ch1.len(), 680);
+                // Band 0 (category 0, uncoupled low band): outside the
+                // coupling range both channels stay zero under the
+                // current split (the uncoupled low-band routing is a
+                // recorded docs question).
+                // Band 2 (first coupled band, index j=2): the band's
+                // first line carries the dequantised level split by the
+                // w=4 pan pair.
+                let ci = crate::category::CategoryIndex::new(live.categories[2]).unwrap();
+                let val = crate::expectation::dequantise_level(ci, 1, 0, 1.0).unwrap();
+                let (a, b) =
+                    crate::coupling::coupling_pan_pair(CouplingPanWidth::W4, indices[0]).unwrap();
+                let line = 40; // band 2's first line.
+                assert!((s.ch0[line] - val * a).abs() < 1e-5);
+                assert!((s.ch1[line] - val * b).abs() < 1e-5);
+                let energy: f32 = s.ch0.iter().chain(s.ch1.iter()).map(|v| v * v).sum();
+                assert!(energy > 0.0, "the frame decodes real energy");
+            }
+            other => panic!("expected stereo, got {other:?}"),
+        }
+
+        // Determinism.
+        let again = decode_frame_body(&frame, &layout, Some(&inj), &[1.0]).unwrap();
+        assert_eq!(&again, &body);
     }
 
     // ----- frame-spectrum integration (§2 / §3.1 / §4) -----

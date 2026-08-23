@@ -171,14 +171,14 @@ impl DecodeGate {
 /// per-call cadence. Built by [`Driver::new`].
 ///
 /// The driver drives the backend frame-decode through the
-/// [`crate::frame`] orchestrator, which runs the statically-pinned
-/// frame-body prefix (§1.1 gain count, §2.1 subband geometry) and stops
-/// at the unpinned pre-spectral read-layout blocker
-/// ([`Error::SpectralCodebookBytesUnavailable`] — the recovered codebooks
-/// are wired, but which one the §1.2/§2.2 reads select and how `v[]` is
-/// formed is not pinned by spec/05). [`Driver::prepare_call`] gives consumers the
-/// orchestrated stage 1+2 output (descramble + sub-packet split)
-/// directly.
+/// [`crate::frame`] orchestrator, which walks the §0.2 wire order
+/// (fields 1-4: sub-packet flag, coupling control, envelope seed) and
+/// stops at the field-5 envelope-tree gap
+/// ([`Error::EnvelopeValueTreeUnavailable`] — the 31-entry envelope VLC
+/// tree family is not among the staged tables; the coupling VLC branch
+/// surfaces [`Error::CouplingIndexTreeUnavailable`] one field earlier).
+/// [`Driver::prepare_call`] gives consumers the orchestrated stage 1+2
+/// output (descramble + sub-packet split) directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Driver {
     config: DecodeConfig,
@@ -340,7 +340,7 @@ impl Driver {
     /// this gate the call drives each sub-packet through the
     /// [`crate::frame`] orchestrator, which runs the statically-pinned
     /// frame-body prefix and stops at the documented §3.2 BSS codebook
-    /// blocker ([`Error::SpectralCodebookBytesUnavailable`], docs-gap
+    /// blocker ([`Error::EnvelopeValueTreeUnavailable`], the envelope-tree gap; formerly docs-gap
     /// #1775); see `decode_call_with_flags` for the full per-stage
     /// description and the implemented observe-gate path.
     ///
@@ -348,7 +348,7 @@ impl Driver {
     ///
     /// - [`Error::CallInputLengthMismatch`] / [`Error::CallOutputLengthMismatch`]
     ///   if the buffer sizes disagree with the wired per-call budget.
-    /// - [`Error::SpectralCodebookBytesUnavailable`] — the documented
+    /// - [`Error::EnvelopeValueTreeUnavailable`] — the documented
     ///   §3.2 BSS blocker the frame-body walk reaches (docs-gap #1775).
     pub fn decode_call(
         &mut self,
@@ -384,7 +384,7 @@ impl Driver {
     ///      [`crate::frame`] orchestrator (§1.1 gain count + §2.1
     ///      subband geometry run), which stops at the documented §3.2
     ///      BSS codebook blocker
-    ///      ([`Error::SpectralCodebookBytesUnavailable`], docs-gap
+    ///      ([`Error::EnvelopeValueTreeUnavailable`], the envelope-tree gap; formerly docs-gap
     ///      #1775) — the inverse-MDCT / coupling stages past it close in
     ///      a later dynamic-BSS-dump round.
     /// 5. Advances the session cursor on success. The decode-gate
@@ -404,7 +404,7 @@ impl Driver {
     ///
     /// - [`Error::CallInputLengthMismatch`] / [`Error::CallOutputLengthMismatch`]
     ///   if the buffer sizes disagree with the wired per-call budget.
-    /// - [`Error::SpectralCodebookBytesUnavailable`] from the backend
+    /// - [`Error::EnvelopeValueTreeUnavailable`] / [`Error::CouplingIndexTreeUnavailable`] from the backend
     ///   frame-body walk on the [`DecodeGate::Decode`] gate (docs-gap
     ///   #1775).
     pub fn decode_call_with_flags(
@@ -440,7 +440,7 @@ impl Driver {
             // statically-pinned prefix (§1.1 gain count, §2.1 subband
             // geometry) and stops precisely at the §3.2 BSS codebook
             // blocker (docs-gap #1775,
-            // `Error::SpectralCodebookBytesUnavailable`). Reserving that
+            // `Error::EnvelopeValueTreeUnavailable`). Reserving that
             // signal for the documented blocker keeps it distinct from a
             // size mismatch and from the legacy `NotImplemented`.
             //
@@ -457,16 +457,17 @@ impl Driver {
             // head, while slot 0 opens with the well-formed raw 29).
             // Only the head frame's pinned prefix is walked.
             DecodeGate::Decode => {
-                crate::frame::decode_frame_body(
-                    prepared.descrambled(),
+                let layout = crate::frame::FrameLayout::for_flavor_geometry(
                     self.config.channels,
                     u32::from(self.config.subband_count),
+                    self.config.samples_per_frame,
                 )?;
-                // Unreachable on a non-trivial stream: `decode_frame_body`
-                // returns the BSS blocker for every coded frame. The
-                // explicit terminator keeps the match total if a future
-                // dynamic-BSS-dump round unblocks the walk.
-                Err(Error::SpectralCodebookBytesUnavailable)
+                crate::frame::decode_frame_body(prepared.descrambled(), &layout, None, &[1.0])?;
+                // Unreachable: without an envelope injection the walk
+                // stops at the field-5 envelope-tree gap. The explicit
+                // terminator keeps the match total for a future round
+                // that stages the envelope trees.
+                Err(Error::EnvelopeValueTreeUnavailable)
             }
         }
     }
@@ -774,10 +775,11 @@ mod tests {
     /// well-formed §1.1 gain header (top 6 bits = `001000` = 8 → 2
     /// segments), so the frame-body walk passes the gain stage and
     /// reaches the §3.2 BSS blocker rather than the underflow guard.
-    fn packet_with_valid_gain_header() -> Vec<u8> {
-        let mut p = vec![0u8; 465];
-        p[0] = 0b0010_0000; // top 6 bits of sub-packet 0 = 8.
-        p
+    fn packet_with_fixed_coupling_head() -> Vec<u8> {
+        // §0.2 head: bit 0 = sub-packet flag 0, bit 1 = coupling mode 0
+        // (fixed) → sixteen 4-bit indices (all zero = in range), then
+        // the 6-bit envelope seed. An all-zero packet satisfies it.
+        vec![0u8; 465]
     }
 
     #[test]
@@ -804,17 +806,17 @@ mod tests {
     }
 
     #[test]
-    fn decode_call_surfaces_bss_blocker_on_wired_sizes() {
-        // With both buffer sizes wired correctly and a well-formed gain
-        // header, `decode_call` drives the frame-body walk to the
-        // documented §3.2 BSS codebook blocker (docs-gap #1775).
+    fn decode_call_surfaces_envelope_tree_gap_on_wired_sizes() {
+        // With both buffer sizes wired correctly and a fixed-branch
+        // §0.2 head, `decode_call` drives the frame walk through fields
+        // 1-4 and stops at the field-5 envelope-tree gap.
         let mut d = real_driver();
-        let packet = packet_with_valid_gain_header();
+        let packet = packet_with_fixed_coupling_head();
         let mut out = vec![0u8; 8_192];
         let err = d.decode_call(&packet, &mut out, 0).unwrap_err();
-        assert_eq!(err, Error::SpectralCodebookBytesUnavailable);
-        // The blocker path does NOT advance the session cursor (no
-        // partial state on the GAP signal).
+        assert_eq!(err, Error::EnvelopeValueTreeUnavailable);
+        // The gap path does NOT advance the session cursor (no partial
+        // state on the GAP signal).
         assert_eq!(d.calls_completed(), 0);
         assert_eq!(d.total_pcm_emitted(), 0);
     }
@@ -914,31 +916,32 @@ mod tests {
     }
 
     #[test]
-    fn decode_gate_via_flags_surfaces_bss_blocker() {
+    fn decode_gate_via_flags_surfaces_envelope_tree_gap() {
         // decode_call_with_flags on the real-decode gate behaves exactly
-        // like decode_call: it drives the frame-body walk to the §3.2
-        // BSS blocker, with no cursor motion.
+        // like decode_call: it drives the frame walk to the field-5
+        // envelope-tree gap, with no cursor motion.
         let mut d = real_driver();
-        let packet = packet_with_valid_gain_header();
+        let packet = packet_with_fixed_coupling_head();
         let mut out = vec![0u8; 8_192];
         let err = d
             .decode_call_with_flags(&packet, &mut out, 0, crate::RADECODE_FLAGS_DECODE)
             .unwrap_err();
-        assert_eq!(err, Error::SpectralCodebookBytesUnavailable);
+        assert_eq!(err, Error::EnvelopeValueTreeUnavailable);
         assert_eq!(d.calls_completed(), 0);
         assert_eq!(d.total_pcm_emitted(), 0);
     }
 
     #[test]
-    fn decode_gate_surfaces_gain_underflow_before_blocker() {
-        // An all-zero first sub-packet biases the §1.1 gain segment-count
-        // negative — that stage-1 error fires before the §3 BSS blocker,
-        // proving the walk runs the pinned prefix in order.
+    fn decode_gate_surfaces_coupling_vlc_gap_before_envelope_gap() {
+        // A head whose coupling mode flag is set selects the VLC branch
+        // (field 3b) — that gap fires before the field-5 envelope gap,
+        // proving the walk consumes the §0.2 fields in wire order.
         let mut d = real_driver();
-        let packet = vec![0u8; 465];
+        let mut packet = vec![0u8; 465];
+        packet[0] = 0b0100_0000; // bit 0 = 0 (flag), bit 1 = 1 (VLC).
         let mut out = vec![0u8; 8_192];
         let err = d.decode_call(&packet, &mut out, 0).unwrap_err();
-        assert!(matches!(err, Error::GainSegmentCountUnderflow { raw: 0 }));
+        assert_eq!(err, Error::CouplingIndexTreeUnavailable);
         assert_eq!(d.calls_completed(), 0);
     }
 
