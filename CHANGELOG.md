@@ -8,6 +8,16 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Multi-frame streaming test over the assembled walk**
+  (`tests/frame_walk_stream.rs`): five synthetic 93-byte stereo frames
+  in the traced packet-2 shape decode frame after frame through
+  `decode_frame_body` (budget rule, live categories, §4 pan split) and
+  stream through the recovered-window synthesis engine into real,
+  non-silent 16-bit PCM (the 680-line ↔ hop-512 block cadence is a test
+  arrangement — the vendor kernel cadence stays the recorded GAP);
+  plus a 200-buffer pseudo-random robustness sweep (typed errors only,
+  never a panic) and a per-band-gain scaling check.
+
 - **§0.2 pre-spectral frame walk — the round-9 wire order, end to
   end.** `frame::read_frame_head` reads fields 1–4 (sub-packet flag,
   coupling mode flag, `Ncoupband` fixed-width coupling indices, 6-bit
