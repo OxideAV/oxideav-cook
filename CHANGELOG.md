@@ -33,6 +33,19 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Subband geometry: 20 spectral lines per coded band.** The staged
+  per-category vector dimensions satisfy `dim_lo × dim_hi = 20` for
+  every category (`{2,2,2,4,4,5,5}` × `{10,10,10,5,5,4,4}`), so
+  `SubbandGeometry` now maps band `b` to lines `[20·b, 20·b + 20)`
+  (`LINES_PER_BAND`, `MAX_SUBBANDS = 51 = floor(1024 / 20)` = the
+  `0x8c40` LUT length); `band_symbol_count(b, dim_lo) == dim_hi` is
+  pinned for every category, and the live `Nb = 34` covers 680 of the
+  1024 transform lines. The previous reading of the `0x8c40` LUT as the
+  per-band start line (bands 0..11 one line wide, 20 subbands = 15
+  lines) is withdrawn; `subband_start_line` / `subband_line_range` /
+  `SUBBAND_START_LINE_LUT_RVA` / `SUBBAND_IDENTITY_RUN` removed
+  (`SUBBAND_CATEGORY_LUT_RVA` names the LUT head). Synthetic tests now
+  encode full 20-line band vector groups.
 - **Round-9/10 docs consumption — the `0x8d0c` tables are the §4.3
   joint-stereo pan coefficients, not MDCT windows.** The docs
   workspace's round 10 (`provenance/10-cook-coupling-pan-label.md`)

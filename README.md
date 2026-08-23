@@ -405,27 +405,30 @@ numeric facts tables + real-stream validation).
   unambiguous"*) is not pinned by this round; the structural lookup is
   the piece this module wires.
 - **Subband → coefficient-range geometry** —
-  [`subband`](src/subband.rs) wires frame-syntax §2.1
-  (`docs/audio/cook/spec/05-cook-backend-frame-syntax.md` §2.1,
-  `provenance/05` evidence #4): the same `cook.dll!0x8c40` LUT that
-  [`bit_alloc`](src/bit_alloc.rs) reads as a category map is *also*,
-  read as `[band*4 + 0x8c40]`, the **start spectral line of each
-  subband** (identity `0..11` over the first twelve subbands, then
-  compresses). [`subband_start_line`](src/subband.rs) reads `lut[band]`,
-  [`subband_line_range`](src/subband.rs) is the half-open
-  `[start_line[band] .. start_line[band+1])` coefficient range a band
-  occupies, and [`SubbandGeometry::new`](src/subband.rs) caches the
-  `subband_count + 1` boundary lines for a fixed-`subband_count` stream
-  and answers per-band [`line_range`](src/subband.rs) /
-  [`line_count`](src/subband.rs) / [`total_coded_lines`](src/subband.rs)
-  queries — the band → line mapping both the §2.2 dequant walk and the
-  §4 joint-stereo coupling split drive off. The companion `0.5` scalar
-  at `0x8c3c` is surfaced as [`SUBBAND_HALF_SCALAR`](src/subband.rs). The
-  §2.2 category-*assignment* bit-allocation loop (keyed off the `0x8f38`
-  per-category expected-cost LUT, which is **not** among the extracted
-  tables) is a recorded DOCS-GAP; only the static band → line geometry
-  is wired here. Ten unit tests pin the identity run, the post-12
-  compression, the gap-free boundary tiling, and the range bounds.
+  [`subband`](src/subband.rs) wires the band → line map the §2.2 dequant
+  walk, the §3 spectral read and the §4 coupling split drive off. The
+  band width is **derived from the staged category tables**: `dim_lo`
+  (`{2,2,2,4,4,5,5}`, the codebook vector dimension) times `dim_hi`
+  (`{10,10,10,5,5,4,4}`, the per-band symbol count) is **20 for every
+  category**, so a coded band is 20 spectral lines
+  ([`LINES_PER_BAND`](src/subband.rs)): band `b` occupies
+  `[20·b, 20·b + 20)`, the live `Nb = 34` bands of the validated flavor
+  cover 680 of its 1024 transform lines, and the 51-entry `0x8c40` LUT
+  spans exactly `floor(1024 / 20)` whole subbands
+  ([`MAX_SUBBANDS`](src/subband.rs)).
+  [`SubbandGeometry::new`](src/subband.rs) answers per-band
+  [`line_range`](src/subband.rs) / [`line_count`](src/subband.rs) /
+  [`total_coded_lines`](src/subband.rs) and
+  [`band_symbol_count`](src/subband.rs) `= ceil(20 / dim_lo) = dim_hi`
+  (pinned by a test for every category). An earlier reading took
+  spec/05 §2.1's "read as `[band*4 + 0x8c40]` … start spectral line"
+  sentence literally (bands 0..11 one line wide, 20 subbands covering
+  15 lines) — ruled out by the 20-line product; the LUT stays typed in
+  [`bit_alloc`](src/bit_alloc.rs) under its pinned category/position
+  role and what it indexes per subband at decode time is a recorded
+  docs question (see "Not yet implemented"). The companion `0.5`
+  scalar at `0x8c3c` is surfaced as
+  [`SUBBAND_HALF_SCALAR`](src/subband.rs).
 - **Exponent-indexed scale-ladder accessors** —
   [`scale`](src/scale.rs) wires the typed lookups for the two
   back-to-back 127-entry f32 ladders (`cook.dll!0x91fc` = `2^k`,

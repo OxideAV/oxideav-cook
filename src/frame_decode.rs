@@ -370,18 +370,17 @@ mod tests {
 
     #[test]
     fn mono_frame_decodes_the_pinned_coefficients() {
-        // First 12 subbands are identity (1 line each); decode them with
-        // cb6 and the rest empty. Because each band is 1 line, dim-5 cb6
-        // over-covers — but decode_band_coefficients truncates to the
-        // band's line_count (1), so each band consumes one cb6 vector +
-        // its sign bits.
+        // Every band is 20 lines; a cb6 band is four 5-line vectors.
+        // Bands 0..4 are coded (cb6) with a single non-zero level on the
+        // band's first line and the rest empty.
         let geom = SubbandGeometry::new(20).unwrap();
         let sub = geom.subband_count();
         let mut cats = vec![BandCategory::Empty; sub as usize];
-        // Bands 0..4 coded (cb6), each 1 line wide.
         let mut fields = Vec::new();
-        // Per band a single cb6 vector [1,0,0,0,0] with one sign bit.
-        let per_band_digits = [1u32, 0, 0, 0, 0];
+        // Per band: vector [1,0,0,0,0] + one sign bit, then three
+        // all-zero vectors (no sign bits).
+        let mut per_band_digits = [0u32; 20];
+        per_band_digits[0] = 1;
         for band in 0..4u32 {
             cats[band as usize] = BandCategory::Coded(cat(6));
             let sign = band & 1; // alternate signs
@@ -414,7 +413,8 @@ mod tests {
         let sub = geom.subband_count();
         let mut cats = vec![BandCategory::Empty; sub as usize];
         let mut fields = Vec::new();
-        let digits = [1u32, 0, 0, 0, 0];
+        let mut digits = [0u32; 20];
+        digits[0] = 1;
         for band in 0..6u32 {
             cats[band as usize] = BandCategory::Coded(cat(6));
             encode_cb6_band(&mut fields, &digits, &[0]);

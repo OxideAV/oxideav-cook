@@ -553,8 +553,8 @@ pub use spi::{
 };
 #[doc(hidden)]
 pub use subband::{
-    subband_line_range, subband_start_line, SubbandGeometry, SUBBAND_HALF_SCALAR,
-    SUBBAND_HALF_SCALAR_RVA, SUBBAND_IDENTITY_RUN, SUBBAND_START_LINE_LUT_RVA,
+    SubbandGeometry, LINES_PER_BAND, MAX_SUBBANDS, SUBBAND_CATEGORY_LUT_RVA, SUBBAND_HALF_SCALAR,
+    SUBBAND_HALF_SCALAR_RVA,
 };
 #[doc(hidden)]
 pub use subpacket::SubPacketLayout;

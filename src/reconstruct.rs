@@ -326,13 +326,13 @@ mod tests {
 
     #[test]
     fn band_fill_writes_pinned_dequant_chain() {
-        // A 20-subband stream: band 0 is one line wide (identity run).
+        // A 20-subband stream: every band is 20 lines wide.
         let geom = SubbandGeometry::new(20).unwrap();
         let range = geom.line_range(0).unwrap();
-        assert_eq!(range.end - range.start, 1);
+        assert_eq!(range.end - range.start, 20);
 
-        let values = [3.0f32];
-        let signs = [0u32];
+        let values = [3.0f32; 20];
+        let signs = [0u32; 20];
         let recon = BandReconstruction {
             category: cat(2),
             values: &values,
@@ -343,7 +343,11 @@ mod tests {
         let mut spectrum = vec![0.0f32; geom.total_coded_lines() as usize];
         reconstruct_band(&mut spectrum, &geom, 0, &recon).unwrap();
         // value * sign(+1) * scale * gain = 3 * 1 * 0.25 * 2 = 1.5.
-        assert_eq!(spectrum[range.start as usize], 1.5);
+        for line in range {
+            assert_eq!(spectrum[line as usize], 1.5);
+        }
+        // Lines of the next band stay untouched.
+        assert_eq!(spectrum[20], 0.0);
     }
 
     #[test]
@@ -378,7 +382,7 @@ mod tests {
     #[test]
     fn band_fill_rejects_value_count_mismatch() {
         let geom = SubbandGeometry::new(20).unwrap();
-        // Band 0 is one line; hand it two values.
+        // Band 0 is 20 lines; hand it two values.
         let values = [1.0f32, 2.0];
         let signs = [0u32, 0];
         let recon = BandReconstruction {
@@ -392,7 +396,7 @@ mod tests {
         assert_eq!(
             reconstruct_band(&mut spectrum, &geom, 0, &recon).unwrap_err(),
             Error::BandValueCountMismatch {
-                line_count: 1,
+                line_count: 20,
                 got: 2
             }
         );
@@ -400,12 +404,12 @@ mod tests {
 
     #[test]
     fn band_fill_rejects_sign_count_mismatch() {
-        // Band 0 is one line; the value slice matches but the sign slice
+        // Band 0 is 20 lines; the value slice matches but the sign slice
         // is empty — the mismatch is reported against the sign slice.
         let geom = SubbandGeometry::new(20).unwrap();
-        assert_eq!(geom.line_count(0).unwrap(), 1);
-        let values = [1.0f32];
-        let signs: [u32; 0] = []; // zero signs vs one line.
+        assert_eq!(geom.line_count(0).unwrap(), 20);
+        let values = [1.0f32; 20];
+        let signs: [u32; 0] = []; // zero signs vs twenty lines.
         let recon = BandReconstruction {
             category: cat(0),
             values: &values,
@@ -417,7 +421,7 @@ mod tests {
         assert_eq!(
             reconstruct_band(&mut spectrum, &geom, 0, &recon).unwrap_err(),
             Error::BandValueCountMismatch {
-                line_count: 1,
+                line_count: 20,
                 got: 0
             }
         );

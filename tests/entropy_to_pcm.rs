@@ -61,10 +61,10 @@ fn encode_vector(fields: &mut Vec<(u32, u32)>, c: u8, digits: &[u32], signs: &[u
 
 #[test]
 fn cook_entropy_bitstream_decodes_to_audible_pcm() {
-    // A 12-subband stream (the identity run: bands 0..12 are one line
-    // each). Code the first eight bands, each 1 line wide, with cb6
-    // (dim 5, radix 2): one vector per band carrying a leading non-zero
-    // magnitude so every band lands a real coefficient.
+    // A 12-subband stream (20 lines per band). Code the first eight
+    // bands with cb6 (dim 5, radix 2): four vectors per band, the first
+    // carrying a leading non-zero magnitude so every band lands a real
+    // coefficient, the other three all-zero (no sign bits).
     let subband_count = 12u32;
     let geom = SubbandGeometry::new(subband_count).unwrap();
     let mut cats = vec![BandCategory::Empty; subband_count as usize];
@@ -87,6 +87,9 @@ fn cook_entropy_bitstream_decodes_to_audible_pcm() {
             &digits,
             &signs[..digits.iter().filter(|&&d| d != 0).count()],
         );
+        for _ in 1..4 {
+            encode_vector(&mut fields, 6, &[0, 0, 0, 0, 0], &[]);
+        }
     }
     let bytes = pack(&fields);
 
@@ -177,19 +180,26 @@ fn computed_categories_decode_to_audible_pcm() {
         "expected an all-coded assignment, got {cats:?}"
     );
 
-    // Encode one codebook vector per band matching the computed category.
+    // Encode the band's full 20-line vector group matching the computed
+    // category: `dim_hi` vectors of `dim_lo` digits, the first carrying a
+    // non-zero leading magnitude, the rest all-zero.
     let mut fields = Vec::new();
     for (band, c) in cats.iter().enumerate() {
         let BandCategory::Coded(ci) = c else {
             continue;
         };
         let huffman = spectral_huffman(codebook_for_category(*ci));
-        let dim = category_vector_dims(*ci).lo as usize;
+        let dims = category_vector_dims(*ci);
+        let dim = dims.lo as usize;
         let mut digits = vec![0u32; dim];
         digits[0] = 1 + (band as u32 & 1); // varying leading magnitude
         let symbol = compose_symbol(&digits, *ci).unwrap();
         fields.push(huffman.codeword(symbol).unwrap());
         fields.push((band as u32 & 1, 1)); // sign for the single non-zero digit
+        let zero = compose_symbol(&vec![0u32; dim], *ci).unwrap();
+        for _ in 1..dims.hi {
+            fields.push(huffman.codeword(zero).unwrap());
+        }
     }
     let bytes = pack(&fields);
 
