@@ -1,7 +1,12 @@
 //! §2.2 category-assignment / bit-allocation pass (`cook.dll!0x4800`).
 //!
 //! Source-of-truth:
-//! `docs/audio/cook/provenance/08-cook-category-assignment.md` and
+//! `docs/audio/cook/provenance/08-cook-category-assignment.md` (the
+//! Stage-1 base pass and the synthetic probes),
+//! `docs/audio/cook/provenance/09-cook-frame-read-layout.md` §3 (the
+//! live-frame captures, the half-bit cost identity and the Stage-2
+//! sweep mechanism; tables `live-frame-params` /
+//! `live-frame-allocator-io`) and
 //! `docs/audio/cook/tables/category-assignment-params.csv` / `.meta`,
 //! with the exact budget-slack constant and the refinement behaviour
 //! pinned by **black-box observation** of the reference decoder (the
@@ -60,35 +65,61 @@
 //! flat-non-zero) and both `Nb=4` and `Nb=8` — see the unit tests, whose
 //! expectations are the validator's own output.
 //!
-//! ## Stage 2 — per-band ±1 refinement (`provenance/08` §"Stage 2")
+//! ## Stage 2 — per-band ±1 refinement (`provenance/09` §3, `provenance/08` §"Stage 2")
 //!
-//! After the base pass leaves a residual budget, a refinement loop
-//! **bounded by the decode-state field `+0x28`** (`M`, the
-//! [`refinement_bound`](assign_categories) argument) adjusts individual
-//! bands by ±1 category to spend/reclaim the residual, recording the
-//! order of adjusted bands in an index list. For a **uniform** base under
-//! budget the loop is fully characterised: it upgrades the lowest-index
-//! bands one category finer, one band per pass, `M − 1` bands in total
-//! (the validator: `Nb=8`, `v=0`, `B=200`, base uniform category 5 →
-//! `M=2` upgrades band 0, `M=4` upgrades bands 0/1/2, …). That regime is
-//! implemented and validated here ([`refine_uniform`]).
+//! After the base pass, a refinement walk **bounded by the decode-state
+//! field `+0x28`** (`M`, the [`refinement_bound`](assign_categories)
+//! argument; `M = 128` on the validated stream, pinned by replay) spends
+//! `M − 1` candidate steps adjusting individual bands one category finer.
+//! Round 9 of the docs workspace traced the walk on three real frames and
+//! identified its mechanism; [`refine_categories`] is that mechanism:
 //!
-//! The **non-flat priority interleave** and the **over-budget reclaim**
-//! direction (which also emit a mixed upgrade/reclaim index list) are, as
-//! `provenance/08` itself records, only *partially* characterised. This
-//! module therefore applies refinement only in the validated
-//! uniform-under-budget regime and otherwise returns the base assignment
-//! unchanged, never fabricating the uncharacterised order. See the
-//! module-level followup in `README.md`.
+//! - The walk enumerates **unit offset steps** below the Stage-1 offset.
+//!   With `t[b] = K + off − v[b]`, dropping the offset by one changes the
+//!   category of exactly the bands with **even** `t` (the parity class),
+//!   visited in **ascending band order**; bands whose change the `[0, 7]`
+//!   clip absorbs are not candidates. On the traced frame 2 this yields
+//!   the documented per-sweep change sets (14 / 16 / 15 / 17 / 13 bands
+//!   from offset −3 down to −8, the first two sweeps being exactly the
+//!   even- then odd-`t` bands of the base) — pinned by a test against
+//!   the staged membership lists.
+//! - The `0x8f38` cost LUT is denominated in **half-bits**
+//!   ([`REFINEMENT_TARGET_FACTOR`]): the walk fills toward `2 × budget`.
+//!   A candidate applies only while `Σcost + Δ <= 2 × budget −`
+//!   [`REFINEMENT_CAP_SLACK`]; later candidates are recorded no-ops. The
+//!   slack constant is **fitted** to the three live frames (window
+//!   `{5, 6}`, `6` used — see the constant's docs); everything else is
+//!   the documented mechanism.
+//! - Every candidate (applied or not) spends one of the `M − 1` steps, so
+//!   a small `M` binds the walk — the `provenance/08` flat probes (`M = 2`
+//!   upgrades band 0, `M = 4` upgrades bands 0/1/2, …) are this regime,
+//!   and an over-budget base (`B = 60`, uniform cat 6) stays unchanged
+//!   because its first candidate already overshoots the half-bit cap.
+//!
+//! The walk reproduces the vendor decoder's own category output on all
+//! three staged live frames (`tables/live-frame-allocator-io.csv`: 34/34
+//! bands each; frame 2 stops on a sweep boundary, frames 16/17 stop
+//! mid-sweep) **and** every synthetic `provenance/08` expectation; the
+//! landing totals satisfy the `provenance/09` §3a identity (Σcost just
+//! under `2 × budget`: 1124 / 1130 / 1126 against 1130 / 1138 / 1134).
+//! Not reproduced (and not needed for `cat[]`): the vendor's `arg_14`
+//! index list, which records the candidate sweeps from the *other* end
+//! and keeps enumerating no-ops after the last change until all `M − 1`
+//! steps are spent — the returned [`CategoryAssignment::adjusted`] is
+//! the applied changes most-recent-first (which equals the validator's
+//! index list in the flat M-bound regime).
 //!
 //! ## Wall-respect note
 //!
 //! Every constant is either the documented `category-assignment-params`
-//! table (`K = 32`, offset start `−32`, steps, clip `0..=7`, `cost[7]=0`)
-//! or a value read from the opaque validator's **own output** for a known
-//! input. No decoder source was read; the budget-slack rule is the
-//! documented `K` under a strict comparison, cross-checked against the
-//! validator across flat and non-flat sweeps.
+//! table (`K = 32`, offset start `−32`, steps, clip `0..=7`, `cost[7]=0`,
+//! `budget = bit_limit − bit_cursor`, `Nb = 34`, `M = 128`) or a value
+//! read from the opaque validator's **own output** for a known input
+//! (the synthetic probes of `provenance/08` and the three live frames of
+//! `provenance/09`). No decoder source was read; the Stage-1 budget-slack
+//! rule is the documented `K` under a strict comparison, the Stage-2
+//! mechanism is the documented parity-sweep walk, and the one fitted
+//! constant ([`REFINEMENT_CAP_SLACK`]) is recorded with its window.
 
 use crate::{
     bit_alloc::category_bit_cost,
@@ -243,41 +274,104 @@ impl CategoryAssignment {
     }
 }
 
-/// Whether a base assignment is uniform (all bands the same category).
-fn is_uniform(cats: &[u8]) -> Option<u8> {
-    let first = *cats.first()?;
-    if cats.iter().all(|&c| c == first) {
-        Some(first)
-    } else {
-        None
-    }
-}
+/// The factor relating the `0x8f38` cost LUT to the allocator's bit
+/// budget: the LUT is denominated in **half-bits**, so the Stage-2
+/// refinement fills toward `2 × budget` (`spec/05` §2.2 / `provenance/09`
+/// §3a: the three live frames land at Σcost = 1124 / 1130 / 1126
+/// against `2 × budget` = 1130 / 1138 / 1134, and `Σcost / 2` matches
+/// the bits the spectral stage then consumes to within a few bits).
+pub const REFINEMENT_TARGET_FACTOR: i32 = 2;
 
-/// Apply the Stage-2 refinement to a **uniform** base assignment under
-/// budget: upgrade the lowest-index bands one category finer, one per
-/// pass, `M − 1` bands total, stopping at the finest category (0).
+/// The slack below `2 × budget` the Stage-2 refinement keeps: a
+/// candidate change applies only while
+/// `Σcost + Δ <= REFINEMENT_TARGET_FACTOR × budget − REFINEMENT_CAP_SLACK`.
 ///
-/// Returns the refined categories and the upgraded band indices in the
-/// validator's descending order (`[m−2, m−3, …, 0]`). This is the
-/// validated regime of `provenance/08` Stage 2; callers reach it through
-/// [`assign_categories`].
+/// **Fitted against the three staged live frames** (`provenance/09`,
+/// `tables/live-frame-allocator-io.csv`): the last applied candidates
+/// land at slack 6 / 8 / 8 and the first rejected candidates would land
+/// at slack 0 / 2 / 1, while every later (smaller-delta, min 4)
+/// candidate must also be rejected — which pins the constant to the
+/// window `{5, 6}`; `6` is used. Both values reproduce all 102 live
+/// categories; the window is recorded honestly rather than narrowed by
+/// guesswork.
+pub const REFINEMENT_CAP_SLACK: i32 = 6;
+
+/// Stage-2 per-band ±1 refinement walk (`provenance/09` §3, the
+/// front/back sweep; `provenance/08` Stage 2 for the M-bound flat
+/// regime) from a Stage-1 base assignment at `base_offset`.
+///
+/// The walk enumerates **unit offset steps** below the base offset. For
+/// the current offset, with `t[b] = K + off − v[b]`, exactly the bands
+/// with **even** `t` change category when the offset drops by one
+/// (`(t − 1) >> 1 != t >> 1` iff `t` is even); the candidates are
+/// visited in **ascending band order** (the adjusting cursor — the
+/// vendor records them from the other end, descending), bands whose
+/// change is absorbed by the `[0, 7]` clip are not candidates, and every
+/// candidate spends one of the `M − 1` refinement steps. A candidate
+/// **applies** only while the running total stays under the half-bit
+/// target (`Σcost + Δ <= 2 × budget − `[`REFINEMENT_CAP_SLACK`]);
+/// otherwise it is a recorded no-op. The walk stops when the step budget
+/// is spent or when a whole sweep applied nothing (every later candidate
+/// only costs more).
+///
+/// This reproduces the vendor decoder's own output on all three staged
+/// live frames (34/34 bands each, two of them stopping mid-sweep) and on
+/// every `provenance/08` synthetic probe (the flat M-bound upgrades, the
+/// over-budget uniform base left unchanged).
+///
+/// Returns the refined categories and the applied band indices
+/// most-recent-first.
 #[must_use]
-pub fn refine_uniform(base: &[u8], refinement_bound: u32) -> CategoryAssignment {
-    let mut categories = base.to_vec();
+pub fn refine_categories(
+    v: &[i32],
+    budget: i32,
+    base_offset: i32,
+    refinement_bound: u32,
+) -> CategoryAssignment {
+    let mut categories = base_categories_at(base_offset, v);
+    let mut total: i32 = categories.iter().map(|&c| category_cost(c) as i32).sum();
+    let cap = REFINEMENT_TARGET_FACTOR * budget - REFINEMENT_CAP_SLACK;
+    let max_steps = refinement_bound.saturating_sub(1);
+    let mut steps = 0u32;
+    let mut offset = base_offset;
     let mut adjusted_asc: Vec<u32> = Vec::new();
-    // `M - 1` upgrades (the base assignment consumes the first pass).
-    let upgrades = refinement_bound.saturating_sub(1) as usize;
-    let mut done = 0usize;
-    let mut band = 0usize;
-    while done < upgrades && band < categories.len() {
-        if categories[band] > CATEGORY_CLIP_LO as u8 {
-            categories[band] -= 1;
-            adjusted_asc.push(band as u32);
-            done += 1;
+    // Below this offset no band can change any more (every `(t-1)>>1`
+    // is negative): a termination guard for degenerate inputs.
+    let floor = v.iter().copied().min().unwrap_or(0) - (BASE_CONSTANT_K + 2 * 7 + 2);
+    while steps < max_steps && offset >= floor {
+        let mut any_candidate = false;
+        let mut applied = false;
+        for (band, &vb) in v.iter().enumerate() {
+            let t = BASE_CONSTANT_K + offset - vb;
+            if t.rem_euclid(2) != 0 {
+                continue;
+            }
+            let new = (t - 1) >> 1;
+            if !(CATEGORY_CLIP_LO..=CATEGORY_CLIP_HI).contains(&new) {
+                continue;
+            }
+            let current = (t >> 1).clamp(CATEGORY_CLIP_LO, CATEGORY_CLIP_HI);
+            if new == current {
+                continue;
+            }
+            any_candidate = true;
+            if steps >= max_steps {
+                break;
+            }
+            steps += 1;
+            let delta = category_cost(new as u8) as i32 - category_cost(categories[band]) as i32;
+            if total + delta <= cap {
+                total += delta;
+                categories[band] = new as u8;
+                adjusted_asc.push(band as u32);
+                applied = true;
+            }
         }
-        band += 1;
+        offset -= 1;
+        if any_candidate && !applied {
+            break;
+        }
     }
-    // The validator's index list is most-recent-first (descending band).
     adjusted_asc.reverse();
     CategoryAssignment {
         categories,
@@ -285,32 +379,22 @@ pub fn refine_uniform(base: &[u8], refinement_bound: u32) -> CategoryAssignment 
     }
 }
 
-/// Assign per-band categories from `(v, budget)` with an optional Stage-2
+/// Assign per-band categories from `(v, budget)` with the Stage-2
 /// refinement bounded by `refinement_bound` (`M`, decode-state `+0x28`).
 ///
-/// Runs the base pass ([`assign_base_categories`]); when the base is
-/// **uniform and under budget** it applies the validated
-/// [`refine_uniform`] Stage-2 upgrade. Otherwise — a non-uniform base or
-/// an over-budget base, whose refinement priority order `provenance/08`
-/// leaves only partially characterised — it returns the base assignment
-/// unchanged rather than fabricate the uncharacterised order.
-///
-/// `refinement_bound == 0` or `1` applies no refinement (the base pass
-/// is the first `M`).
+/// Runs the base pass ([`assign_base_offset`]) and then the
+/// [`refine_categories`] walk from the base offset. `refinement_bound ==
+/// 0` or `1` applies no refinement (the base pass is the first `M`).
 #[must_use]
 pub fn assign_categories(v: &[i32], budget: i32, refinement_bound: u32) -> CategoryAssignment {
-    let base = assign_base_categories(v, budget);
-    let base_cost: u32 = base.iter().map(|&c| category_cost(c)).sum();
-    let under_budget = (base_cost as i32) < budget;
-    match (is_uniform(&base), under_budget) {
-        (Some(c), true) if c > CATEGORY_CLIP_LO as u8 && refinement_bound > 1 => {
-            refine_uniform(&base, refinement_bound)
-        }
-        _ => CategoryAssignment {
-            categories: base,
-            adjusted: Vec::new(),
-        },
-    }
+    let base_offset = assign_base_offset(v, budget);
+    refine_categories(v, budget, base_offset, refinement_bound)
+}
+
+/// The total half-bit cost `Σ_b cost[cat[b]]` of an assignment.
+#[must_use]
+pub fn total_cost(categories: &[u8]) -> u32 {
+    categories.iter().map(|&c| category_cost(c)).sum()
 }
 
 /// The per-band [`BandCategory`] list from `(v, budget, refinement_bound)`
@@ -559,9 +643,11 @@ mod tests {
 
     #[test]
     fn over_budget_uniform_base_is_left_unrefined() {
-        // Nb=8, v=0, B=60: base marginally exceeds (uniform cat6, cost
-        // 128 > 60). The reclaim-direction refinement index list is only
-        // partially characterised, so we leave the base unchanged.
+        // Nb=8, v=0, B=60: base uniform cat6 (cost 128, already past the
+        // raw budget). The first refinement candidate would land at
+        // 128 + 6 = 134 > 2*60 - 6, so every candidate is a recorded
+        // no-op (the validator's "reclaim branch records candidate bands"
+        // observation) and the categories stay the base.
         let v = [0i32; 8];
         let a = assign_categories(&v, 60, 4);
         assert_eq!(a.categories, vec![6; 8]);
@@ -569,13 +655,198 @@ mod tests {
     }
 
     #[test]
-    fn nonuniform_base_is_left_unrefined() {
-        // A non-flat base: refinement priority order is only partially
-        // characterised, so assign_categories returns the base unchanged.
+    fn nonflat_refinement_walks_the_parity_sweep_ascending() {
+        // v=[0,4,8,12,2,6,10,14], B=250: base off=-17 gives t = 15 - v,
+        // all odd, so the first unit step has no candidates and the
+        // second (t = 14 - v, all even) visits bands 0..=6 ascending
+        // (band 7 is already category 0 and is absorbed by the clip).
+        // M binds: M-1 candidates apply (the half-bit cap 2*250-6 = 494
+        // is far above the base cost 246).
         let v = [0, 4, 8, 12, 2, 6, 10, 14];
-        let a = assign_categories(&v, 250, 5);
-        assert_eq!(a.categories, assign_base_categories(&v, 250));
-        assert!(a.adjusted.is_empty());
+        let base = assign_base_categories(&v, 250);
+        assert_eq!(base, vec![7, 5, 3, 1, 6, 4, 2, 0]);
+        let cases: [(u32, Vec<u8>, Vec<u32>); 5] = [
+            (1, vec![7, 5, 3, 1, 6, 4, 2, 0], vec![]),
+            (2, vec![6, 5, 3, 1, 6, 4, 2, 0], vec![0]),
+            (3, vec![6, 4, 3, 1, 6, 4, 2, 0], vec![1, 0]),
+            (5, vec![6, 4, 2, 0, 6, 4, 2, 0], vec![3, 2, 1, 0]),
+            (8, vec![6, 4, 2, 0, 5, 3, 1, 0], vec![6, 5, 4, 3, 2, 1, 0]),
+        ];
+        for (m, cats, idx) in cases {
+            let a = assign_categories(&v, 250, m);
+            assert_eq!(a.categories, cats, "M={m}");
+            assert_eq!(a.adjusted, idx, "M={m} idx");
+        }
+        // Past the first full sweep the walk continues into the next
+        // parity class (now t = 13 - v, the same bands again, one finer).
+        let a = assign_categories(&v, 250, 16);
+        assert_eq!(a.categories, vec![4, 2, 1, 0, 4, 2, 0, 0]);
+        assert_eq!(a.adjusted.len(), 15);
+    }
+
+    // ---- round-9 live frames: the vendor's own real-frame output ----
+
+    fn live_frames() -> Vec<(u32, Vec<i32>, i32, Vec<u8>)> {
+        let io = crate::tables::live_frame_allocator_io();
+        let params = crate::tables::live_frame_params();
+        io.iter()
+            .zip(params)
+            .map(|(fr, pr)| {
+                assert_eq!(fr.packet, pr.packet);
+                (
+                    fr.packet,
+                    fr.values.clone(),
+                    pr.alloc_budget,
+                    fr.categories.clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn live_frames_reproduce_the_vendor_categories_exactly() {
+        // provenance/09 §3 / tables/live-frame-allocator-io.csv: replaying
+        // each captured (v[], budget) at Nb=34, M=128 must reproduce the
+        // live category array bit-exactly — 34/34 bands on all three
+        // frames. Frame 2 stops on a sweep boundary; frames 16 and 17
+        // stop mid-sweep (33/34 and 31/34 against any single offset), so
+        // this pins the step rule, not just the final offset.
+        for (packet, v, budget, want) in live_frames() {
+            assert_eq!(v.len(), 34);
+            let a = assign_categories(&v, budget, 128);
+            assert_eq!(
+                a.categories, want,
+                "packet {packet}: categories differ from the live capture"
+            );
+        }
+    }
+
+    #[test]
+    fn live_frames_land_just_under_the_half_bit_target() {
+        // provenance/09 §3a: Σcost[cat[b]] = 1124 / 1130 / 1126 against
+        // 2 × budget = 1130 / 1138 / 1134 (cost in half-bits).
+        let want_total = [1124u32, 1130, 1126];
+        for ((packet, v, budget, _), want) in live_frames().into_iter().zip(want_total) {
+            let a = assign_categories(&v, budget, 128);
+            let total = total_cost(&a.categories);
+            assert_eq!(total, want, "packet {packet} total cost");
+            let target = REFINEMENT_TARGET_FACTOR * budget;
+            assert!(
+                (total as i32) < target,
+                "packet {packet}: {total} >= {target}"
+            );
+            assert!(
+                target - (total as i32) <= 10,
+                "packet {packet}: slack {} too loose",
+                target - total as i32
+            );
+        }
+    }
+
+    #[test]
+    fn live_frame_2_stage1_lands_at_minus_three_and_sweeps_as_documented() {
+        // provenance/09 §3: packet 2 (budget 565) — stage-1 offset −3,
+        // then five unit sweeps of 14 / 16 / 15 / 17 / 13 changes whose
+        // first two are the even-t bands {0,1,2,3,4,5,7,11,13,15,18,25,
+        // 26,27} and the odd-t bands {6,8,9,10,12,14,16,17,19,20,21,22,
+        // 23,24,28,29} of the base, landing exactly on base(−8).
+        let (_, v, budget, want) = live_frames().into_iter().next().unwrap();
+        assert_eq!(assign_base_offset(&v, budget), -3);
+        // Replay sweep by sweep through the refinement bound: each extra
+        // sweep's worth of steps applies that sweep's change set.
+        let sweep_sizes = [14u32, 16, 15, 17, 13];
+        let mut steps = 0u32;
+        let mut prev = assign_base_categories(&v, budget);
+        let sweeps_doc: [&[u32]; 2] = [
+            &[0, 1, 2, 3, 4, 5, 7, 11, 13, 15, 18, 25, 26, 27],
+            &[6, 8, 9, 10, 12, 14, 16, 17, 19, 20, 21, 22, 23, 24, 28, 29],
+        ];
+        for (i, size) in sweep_sizes.iter().enumerate() {
+            steps += size;
+            let a = assign_categories(&v, budget, steps + 1);
+            let changed: Vec<u32> = (0..34u32)
+                .filter(|&b| a.categories[b as usize] != prev[b as usize])
+                .collect();
+            assert_eq!(changed.len(), *size as usize, "sweep {i} size");
+            if i < 2 {
+                assert_eq!(changed, sweeps_doc[i], "sweep {i} membership");
+            }
+            // Every change is one category finer.
+            for &b in &changed {
+                assert_eq!(a.categories[b as usize] + 1, prev[b as usize]);
+            }
+            prev = a.categories;
+        }
+        // After exactly 75 changes the walk is at base(−8) == the live array.
+        assert_eq!(prev, base_categories_at(-8, &v));
+        assert_eq!(prev, want);
+        // And the full M=128 walk stops there (the next candidate would
+        // land at 2 × budget exactly, which the cap rejects).
+        assert_eq!(assign_categories(&v, budget, 128).categories, want);
+    }
+
+    #[test]
+    fn refinement_cap_window_is_exactly_five_to_six() {
+        // Document the fitted constant: slack values 5 and 6 both
+        // reproduce all three live frames; 4 and 7 do not. (The walk is
+        // re-run with a locally substituted cap to pin the window.)
+        fn walk_with_cap(v: &[i32], budget: i32, m: u32, slack: i32) -> Vec<u8> {
+            let base_offset = assign_base_offset(v, budget);
+            let mut cats = base_categories_at(base_offset, v);
+            let mut total: i32 = cats.iter().map(|&c| category_cost(c) as i32).sum();
+            let cap = REFINEMENT_TARGET_FACTOR * budget - slack;
+            let (mut steps, mut off) = (0u32, base_offset);
+            while steps < m - 1 {
+                let (mut any, mut applied) = (false, false);
+                for (b, &vb) in v.iter().enumerate() {
+                    let t = BASE_CONSTANT_K + off - vb;
+                    if t.rem_euclid(2) != 0 {
+                        continue;
+                    }
+                    let new = (t - 1) >> 1;
+                    if !(0..=7).contains(&new) || new == (t >> 1).clamp(0, 7) {
+                        continue;
+                    }
+                    any = true;
+                    if steps >= m - 1 {
+                        break;
+                    }
+                    steps += 1;
+                    let d = category_cost(new as u8) as i32 - category_cost(cats[b]) as i32;
+                    if total + d <= cap {
+                        total += d;
+                        cats[b] = new as u8;
+                        applied = true;
+                    }
+                }
+                off -= 1;
+                if any && !applied {
+                    break;
+                }
+            }
+            cats
+        }
+        let frames = live_frames();
+        for slack in [5i32, 6] {
+            for (packet, v, budget, want) in &frames {
+                assert_eq!(
+                    walk_with_cap(v, *budget, 128, slack),
+                    *want,
+                    "slack {slack} must reproduce packet {packet}"
+                );
+            }
+        }
+        for slack in [4i32, 7] {
+            let fails = frames
+                .iter()
+                .filter(|(_, v, budget, want)| walk_with_cap(v, *budget, 128, slack) != *want)
+                .count();
+            assert!(
+                fails > 0,
+                "slack {slack} unexpectedly reproduces every live frame"
+            );
+        }
+        assert_eq!(REFINEMENT_CAP_SLACK, 6);
     }
 
     #[test]

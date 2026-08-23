@@ -429,8 +429,9 @@ pub use category::{
 #[doc(hidden)]
 pub use category_assignment::{
     assign_band_categories, assign_base_categories, assign_base_offset, assign_categories,
-    base_category, category_cost, refine_uniform, CategoryAssignment, BASE_CONSTANT_K,
-    BISECTION_STEPS, CATEGORY_CLIP_HI, CATEGORY_CLIP_LO, OFFSET_START,
+    base_category, category_cost, refine_categories, total_cost, CategoryAssignment,
+    BASE_CONSTANT_K, BISECTION_STEPS, CATEGORY_CLIP_HI, CATEGORY_CLIP_LO, OFFSET_START,
+    REFINEMENT_CAP_SLACK, REFINEMENT_TARGET_FACTOR,
 };
 #[doc(hidden)]
 pub use codebook::{spectral_huffman, SpectralHuffman, CODEBOOK_COUNT};

@@ -6,6 +6,31 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **§2.2 Stage-2 refinement walk — the vendor's real-frame category
+  output reproduced bit-exactly.** `category_assignment::refine_categories`
+  replaces the uniform-only `refine_uniform` with the mechanism docs
+  round 9 traced on three real frames (`provenance/09` §3): the walk
+  enumerates unit offset steps below the Stage-1 base, per step the
+  even-`t` parity class of `t = K + off − v[b]` changes one category
+  finer in ascending band order (clip-absorbed bands are not
+  candidates), each candidate spends one of the `M − 1` steps, and a
+  candidate applies only while `Σcost + Δ <= 2 × budget − 6` — the
+  `0x8f38` cost LUT being denominated in **half-bits**
+  (`REFINEMENT_TARGET_FACTOR = 2`; `REFINEMENT_CAP_SLACK = 6`, fitted
+  against the live frames with its `{5, 6}` window recorded). Validated
+  against the staged captures (`tables/live-frame-allocator-io.csv`):
+  all three frames' 34 categories reproduce exactly (frames 16/17 stop
+  mid-sweep), the landing totals are the documented 1124 / 1130 / 1126
+  against `2 × budget` = 1130 / 1138 / 1134, frame 2's Stage-1 offset is
+  the documented −3 with the documented sweep sizes 14/16/15/17/13 and
+  sweep-1/2 memberships, and every synthetic `provenance/08` probe
+  (flat M-bound upgrades, over-budget base unchanged, non-flat base)
+  still reproduces. `assign_categories` now refines non-flat inputs
+  (previously returned the base unchanged); new `total_cost` helper.
+  `refine_uniform` removed (subsumed).
+
 ### Changed
 
 - **Round-9/10 docs consumption — the `0x8d0c` tables are the §4.3
