@@ -62,8 +62,9 @@
 //!
 //! The pinned facts are the *per-band* arithmetic. The band loop that
 //! drives them — how raw quantiser indices `q` are read from the
-//! bitstream (the §3.1 VLC walk, whose codebook bytes are a §3.2 BSS
-//! GAP), how the level combines with the §0x8fcc category-expectation
+//! bitstream (the §3.1 VLC walk over the recovered codebooks — see
+//! [`crate::spectral_decode`]), how the level combines with the
+//! `0x8fcc` category-expectation
 //! table (audit #17, *"not statically unambiguous"*), the sign
 //! restoration, and where the result feeds the inverse MDCT — is **not**
 //! pinned beyond the spec/05 §2.2 closed form and the two `.meta`
@@ -118,7 +119,7 @@ impl CategoryParameters {
     /// this category's parameters.
     ///
     /// `q` is the per-band quantisation magnitude the §3.1 VLC walk
-    /// decodes (its supplying codebook bytes are a §3.2 BSS GAP; this is
+    /// decodes (normally the wired §3.1 VLC walk supplies it; this is
     /// the arithmetic the worker applies once `q` is in hand). See
     /// [`quantiser_level`] for the free-function form and the order of
     /// operations.
@@ -146,7 +147,7 @@ impl CategoryParameters {
 ///    `0..=level_count-1`.
 ///
 /// `params` is one looked-up [`CategoryParameters`] bundle; `q` is the
-/// raw per-band VLC magnitude (a §3.2 BSS GAP supplies it).
+/// raw per-band VLC magnitude (normally the wired §3 entropy read's output).
 pub fn quantiser_level(params: &CategoryParameters, q: f32) -> u32 {
     let mag = band_gain_magnitude(params, q) / QUANTISER_DIVISOR;
     // Round-to-nearest then floor any negative result to 0 (the index is

@@ -51,7 +51,7 @@
 //! reciprocals) and the radix recovery, but does **not** assert a
 //! particular field-decomposition role: the caller supplies which radix
 //! (by category, via the parallel `0x8f90` level-count table) and consumes
-//! the `(quotient, remainder)` digit pair. The §3.2 BSS codebook bytes the
+//! the `(quotient, remainder)` digit pair. The codebook symbols the
 //! decomposed digits index remain the recorded GAP.
 //!
 //! ## Wall-respect note

@@ -11,17 +11,14 @@
 //!
 //! ## Where this sits in the frame body
 //!
-//! `spec/05` §0 pins the backend per-frame body as four sub-stages — gain
-//! control → category/quant walk → spectral VLC dequant → inverse
-//! transform — and, for stereo, the coupling split. The *entropy* read of
-//! each stage (the VLC walk that recovers the gain-segment records, the
-//! per-band quantiser indices, and the spectral symbol values) descends
-//! the seven Huffman codebooks whose per-symbol code/length bytes are
-//! built in the decoder's `.data` BSS at init and are **not** present in
-//! the file image (`spec/05` §3.2 — docs-gap #1775). That is the one hard
-//! blocker the frame walk stops at.
+//! `spec/05` §0 pins the backend per-frame body as four sub-stages — the
+//! §0.2 head/envelope walk → category/quant → spectral VLC dequant →
+//! inverse transform — and, for stereo, the coupling split. The spectral
+//! entropy read is wired over the recovered codebooks; on raw real-frame
+//! bytes the walk stops earlier, at the unstaged envelope / coupling
+//! VLC trees (see [`crate::frame`]).
 //!
-//! *Downstream* of that blocker, however, the trace pins the entire
+//! Independent of that, the trace pins the entire
 //! **reconstruction arithmetic** statically: once the per-band symbol
 //! values, sign bits, dequant scales and per-band gains are in hand, the
 //! dequantiser `cook.dll!0x4600` assembles each spectral line as
@@ -32,13 +29,10 @@
 //! entropy-decoded values. The stereo decouple (§4.2) is layered on top in
 //! [`decouple_stereo`].
 //!
-//! Splitting the decode this way keeps the wall intact: the BSS-built
-//! codebook bytes are the caller's input (a §3.2 GAP a future Validator
-//! round fills), and everything this module computes is the trace's own
-//! closed-form arithmetic. A consumer that dumps the BSS codebooks can
-//! feed their decoded values straight into [`reconstruct_band`] /
-//! [`reconstruct_spectrum`] to obtain the iMDCT input without re-deriving
-//! any DSP.
+//! Splitting the decode this way keeps the wall intact: the per-band
+//! values/signs are inputs (normally produced by the wired §3 entropy
+//! read of [`crate::frame_decode`]), and everything this module computes
+//! is the trace's own closed-form arithmetic.
 //!
 //! ## What this module provides
 //!
@@ -58,13 +52,13 @@
 //!   index `j` per coupling band (§4.1).
 //! - [`StereoSpectra`] — the two channel spectra a decouple produces.
 //!
-//! ## What stays a GAP (caller-supplied inputs)
+//! ## Caller-supplied inputs
 //!
-//! The per-symbol codebook **values** (§3.2 BSS GAP), the **sign bits**
-//! and per-band **quantiser indices** the VLC walk reads, and the
-//! per-coupling-width **rotation coefficient values** (§4.3 BSS GAP) are
-//! all caller inputs — this module never fabricates them. It wires only
-//! the trace's pinned reconstruction arithmetic over those inputs.
+//! The per-band **values** and **sign bits** (normally the wired §3
+//! entropy read's output) and, for [`decouple_stereo`], the coefficient
+//! table (the vendored §4.3 pan rows via [`decouple_stereo_recovered`])
+//! are inputs — this module never fabricates them. It wires only the
+//! trace's pinned reconstruction arithmetic over those inputs.
 //!
 //! ## Wall-respect note
 //!
@@ -84,7 +78,7 @@ use crate::{
 ///
 /// All three of `values`, `sign_bits` length-match the band's coded line
 /// count; `values` carries the decoded codebook value for each spectral
-/// line (a §3.2 BSS GAP supplies them), `sign_bits` the embedded sign bit
+/// line (normally the wired §3 entropy read's output), `sign_bits` the embedded sign bit
 /// per line (`0` → `+1.0`, non-zero → `-1.0`, via
 /// [`crate::spectral::sign_from_bit`]), `dequant_scale` the §3.1 scale
 /// read as `[q*4 + 0x9150]` for the band, and `band_gain` the §1–§2

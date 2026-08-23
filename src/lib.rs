@@ -295,12 +295,10 @@
 //!
 //! The §1.2 gain *application* (piecewise-constant hold + time-domain
 //! multiply) and the §4.2 joint-stereo mirror-index split are also wired
-//! ([`gain::apply_gain_envelope`], [`spectral::split_coupled_coefficient`])
-//! — pinned closed forms that consume the BSS-gated coefficient inputs.
-//! The runtime-built BSS codebook / coupling tables (§3.2 / §4.3) and the
-//! iMDCT kernel (§5) remain recorded GAPs the walk stops short of; the
-//! entropy + transform pipeline past the §3.2 blocker lands once a
-//! dynamic-BSS-dump Validator round provides the populated tables.
+//! ([`gain::apply_gain_envelope`], [`spectral::split_coupled_coefficient`]).
+//! The spectral codebooks and §4.3 pan tables are recovered and wired;
+//! the unstaged envelope / coupling VLC trees and the iMDCT kernel are
+//! the gaps the raw-bytes walk stops short of (see [`frame`]).
 
 #![forbid(unsafe_code)]
 
@@ -872,8 +870,9 @@ pub enum Error {
     /// coefficient range `[start_line[band] .. start_line[band+1])`; the
     /// dequantiser fills exactly `line_count` coefficients for the band.
     /// The post-entropy reconstruction takes the band's decoded symbol
-    /// values as input (a §3.2 BSS GAP supplies them); this guards a
-    /// caller that hands a value slice of the wrong width.
+    /// values as input (normally the wired §3 entropy read's output);
+    /// this guards a caller that hands a value slice of the wrong
+    /// width.
     BandValueCountMismatch {
         /// The band's coded line count (`line_count[band]`).
         line_count: u32,

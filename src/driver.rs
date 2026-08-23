@@ -338,18 +338,20 @@ impl Driver {
     /// `flags = `[`crate::RADECODE_FLAGS_DECODE`] (= 1, the value a
     /// real decode of a fresh frame passes — validation/04 §4.3). On
     /// this gate the call drives each sub-packet through the
-    /// [`crate::frame`] orchestrator, which runs the statically-pinned
-    /// frame-body prefix and stops at the documented §3.2 BSS codebook
-    /// blocker ([`Error::EnvelopeValueTreeUnavailable`], the envelope-tree gap; formerly docs-gap
-    /// #1775); see `decode_call_with_flags` for the full per-stage
-    /// description and the implemented observe-gate path.
+    /// [`crate::frame`] orchestrator, which walks the §0.2 wire order
+    /// and stops at the unstaged envelope / coupling VLC trees
+    /// ([`Error::EnvelopeValueTreeUnavailable`] /
+    /// [`Error::CouplingIndexTreeUnavailable`]); see
+    /// `decode_call_with_flags` for the full per-stage description and
+    /// the implemented observe-gate path.
     ///
     /// # Errors
     ///
     /// - [`Error::CallInputLengthMismatch`] / [`Error::CallOutputLengthMismatch`]
     ///   if the buffer sizes disagree with the wired per-call budget.
-    /// - [`Error::EnvelopeValueTreeUnavailable`] — the documented
-    ///   §3.2 BSS blocker the frame-body walk reaches (docs-gap #1775).
+    /// - [`Error::EnvelopeValueTreeUnavailable`] /
+    ///   [`Error::CouplingIndexTreeUnavailable`] — the unstaged VLC
+    ///   tree the frame walk stops at.
     pub fn decode_call(
         &mut self,
         packet: &[u8],
@@ -380,13 +382,13 @@ impl Driver {
     ///      per-call PCM budget (16-bit PCM silence) and the call
     ///      completes.
     ///    - **[`DecodeGate::Decode`]** (`flags` bit 0 = 1) — the real
-    ///      bitstream decode; drives each sub-packet through the
-    ///      [`crate::frame`] orchestrator (§1.1 gain count + §2.1
-    ///      subband geometry run), which stops at the documented §3.2
-    ///      BSS codebook blocker
-    ///      ([`Error::EnvelopeValueTreeUnavailable`], the envelope-tree gap; formerly docs-gap
-    ///      #1775) — the inverse-MDCT / coupling stages past it close in
-    ///      a later dynamic-BSS-dump round.
+    ///      bitstream decode; drives the call head through the
+    ///      [`crate::frame`] §0.2 walk (sub-packet flag, coupling
+    ///      control, envelope seed), which stops at the unstaged
+    ///      envelope / coupling VLC trees
+    ///      ([`Error::EnvelopeValueTreeUnavailable`] /
+    ///      [`Error::CouplingIndexTreeUnavailable`]) — the stages past
+    ///      them close once the trees are staged.
     /// 5. Advances the session cursor on success. The decode-gate
     ///    blocker path returns before the cursor moves; no partial
     ///    state is published on failure.
@@ -404,9 +406,9 @@ impl Driver {
     ///
     /// - [`Error::CallInputLengthMismatch`] / [`Error::CallOutputLengthMismatch`]
     ///   if the buffer sizes disagree with the wired per-call budget.
-    /// - [`Error::EnvelopeValueTreeUnavailable`] / [`Error::CouplingIndexTreeUnavailable`] from the backend
-    ///   frame-body walk on the [`DecodeGate::Decode`] gate (docs-gap
-    ///   #1775).
+    /// - [`Error::EnvelopeValueTreeUnavailable`] /
+    ///   [`Error::CouplingIndexTreeUnavailable`] from the backend frame
+    ///   walk on the [`DecodeGate::Decode`] gate.
     pub fn decode_call_with_flags(
         &mut self,
         packet: &[u8],
@@ -417,8 +419,8 @@ impl Driver {
         // Stage 1+2: validate, descramble, split.
         let prepared = self.prepare_call(packet, xor_key)?;
         // Pre-validate the output size before invoking the backend —
-        // keeps the §3.2 BSS-blocker signal reserved for the frame-body
-        // walk itself, distinct from a wrong-sized buffer.
+        // keeps the tree-gap signals reserved for the frame walk
+        // itself, distinct from a wrong-sized buffer.
         let expected_out = self.session.next_call_pcm_bytes() as usize;
         if output.len() != expected_out {
             return Err(Error::CallOutputLengthMismatch {
@@ -435,14 +437,12 @@ impl Driver {
                 // Stage 5: account for the completed call.
                 self.session.advance_one_call(packet.len(), output.len())
             }
-            // The real bitstream decode — drive the frame-body
-            // orchestrator (spec/05 §0–§3), which runs the
-            // statically-pinned prefix (§1.1 gain count, §2.1 subband
-            // geometry) and stops precisely at the §3.2 BSS codebook
-            // blocker (docs-gap #1775,
-            // `Error::EnvelopeValueTreeUnavailable`). Reserving that
-            // signal for the documented blocker keeps it distinct from a
-            // size mismatch and from the legacy `NotImplemented`.
+            // The real bitstream decode — drive the §0.2 frame walk,
+            // which parses the fixed-width head and stops at the
+            // unstaged envelope / coupling VLC trees
+            // (`Error::EnvelopeValueTreeUnavailable`). Reserving those
+            // signals for the walk keeps them distinct from a size
+            // mismatch and from the legacy `NotImplemented`.
             //
             // spec/01 §5 pins that the backend frame-decode method is
             // invoked exactly ONCE per call, with subsequent sub-packets
@@ -504,8 +504,8 @@ impl Driver {
     /// `tests/synthesis_realstream.rs`) — so no real-bitstream §1.1
     /// assertion is made on this path.
     ///
-    /// The §1 gain profiles are entropy-gated (the per-segment records
-    /// descend the §3.2 BSS VLC), so this entry point synthesizes with
+    /// No wire source for §1 gain events is pinned (the round-9 trace
+    /// withdrew the old reading), so this entry point synthesizes with
     /// the flat unity envelope; callers needing explicit profiles can
     /// drive the backend directly with
     /// [`crate::backend::SynthesisBackend::push_frame_with_gain`].
@@ -771,10 +771,6 @@ mod tests {
         assert_eq!(d.total_pcm_emitted(), 0);
     }
 
-    /// A 465-byte packet whose first sub-packet (93 bytes) carries a
-    /// well-formed §1.1 gain header (top 6 bits = `001000` = 8 → 2
-    /// segments), so the frame-body walk passes the gain stage and
-    /// reaches the §3.2 BSS blocker rather than the underflow guard.
     fn packet_with_fixed_coupling_head() -> Vec<u8> {
         // §0.2 head: bit 0 = sub-packet flag 0, bit 1 = coupling mode 0
         // (fixed) → sixteen 4-bit indices (all zero = in range), then
@@ -785,8 +781,8 @@ mod tests {
     #[test]
     fn decode_call_validates_sizing_before_signalling_backend_gap() {
         // `decode_call` validates input + output sizes before the
-        // §3.2 BSS-blocker signal: a wrong-sized buffer should produce a
-        // typed length error, not the backend blocker.
+        // walk's tree-gap signals: a wrong-sized buffer should produce
+        // a typed length error, not the backend gap.
         let mut d = real_driver();
         let packet = vec![0u8; 464];
         let mut out = vec![0u8; 8_192];

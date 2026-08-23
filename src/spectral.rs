@@ -38,7 +38,7 @@
 //!   pins the three non-zero scale magnitudes and
 //!   [`spectral_coefficient`] composes the full pinned assembly
 //!   `value * sign * dequant_scale * band_gain` (the `value` itself
-//!   comes from the §3.2 BSS GAP codebook value table).
+//!   comes from the recovered codebook value table).
 //! - **Joint-stereo mirror-index rotation (§4.2).** For a coupling table
 //!   of length `Ncoup = 1 << coupling_bits`, a per-band coupling index
 //!   `j` splits the single coupled coefficient `c` into the two output
@@ -134,7 +134,7 @@ pub const DEQUANT_SCALE_RVA: u32 = 0x9150;
 /// The trace pins only the **non-zero** part of the table (the worker
 /// reads it as `[q*4 + 0x9150]`; the full element count and the position
 /// of the implied zero entries are not statically pinned — that is the
-/// §3.2 BSS-context GAP). These three values are the f32 magnitudes
+/// recovered runtime dump). These three values are the f32 magnitudes
 /// `2^(-5/2) ≈ 0.17678`, `2^(-2) = 0.25`, `2^(-1/2) ≈ 0.70711` — a
 /// `2^(k/2)` family one quarter-octave apart, consistent with the
 /// `0x93f8` ladder, but the trace pins them as the literal scale triple,
@@ -156,7 +156,7 @@ pub const DEQUANT_SCALE_NONZERO: [f32; 3] = [0.17678, 0.25, 0.70711];
 /// §1–§2."*
 ///
 /// - `value` is the decoded symbol's codebook value — supplied by the
-///   caller because the codebook value table is a §3.2 BSS GAP.
+///   caller (normally the wired §3 entropy read supplies it).
 /// - `sign_bit` selects the [`SIGN_LUT`] multiplier (`0` → `+1.0`,
 ///   non-zero → `-1.0`), via [`sign_from_bit`].
 /// - `dequant_scale` is one of [`DEQUANT_SCALE_NONZERO`] (read as

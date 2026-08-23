@@ -23,14 +23,14 @@
 //!    types the two branches; [`read_coupling_mode`] reads the leading flag
 //!    and classifies. The **fixed-width** branch is fully implementable from
 //!    the [`FrameBitReader`] ([`read_fixed_coupling_index`]); the
-//!    **VLC** branch descends the §3.2 BSS-built codebooks and is the
-//!    recorded blocker.
-//! 2. **Coupling table length.** `Ncoup = 1 << coupling_bits` is the number
-//!    of quantised rotation angles for one coupling band — the length of
-//!    the per-coupling-width coefficient table the §4.2 mirror-index split
-//!    reads (already exposed as [`crate::spectral::coupling_table_len`];
-//!    re-checked here as [`coupling_table_len`] for the control read —
-//!    `(1 << w) − 1` per the round-9/10 table extents).
+//!    **VLC** branch descends a coupling-index tree whose contents are
+//!    not among the staged tables — the recorded gap.
+//! 2. **Coupling table length.** `Ncoup = (1 << coupling_bits) − 1` is
+//!    the number of quantised rotation angles for one coupling band —
+//!    the length of the per-coupling-width §4.3 pan table the §4.2
+//!    mirror-index split reads (already exposed as
+//!    [`crate::spectral::coupling_table_len`]; re-checked here as
+//!    [`coupling_table_len`] — the round-9/10 table extents).
 //!
 //! ## What stays a GAP (not wired)
 //!
@@ -41,13 +41,16 @@
 //!   start/count, so the exact boundary is a recorded DOCS-GAP. The caller
 //!   supplies the contiguous `[first..last)` coupling-band range (the
 //!   §4 [`crate::frame::StereoCoupling`] input).
-//! - The **VLC coupling-index read** descends the seven §3.2 BSS codebooks
-//!   (built at init, not in the file image) — the documented blocker.
-//!   [`read_coupling_index`] performs the fixed-width branch directly and
-//!   surfaces [`Error::CouplingIndexTreeUnavailable`] for the VLC
-//!   branch rather than guessing.
-//! - The **rotation coefficient values** (§4.3) are BSS-built (caller
-//!   input); only the mirror-index closed form is pinned (§4.2, wired in
+//! - The **VLC coupling-index read** descends a coupling-index tree
+//!   whose per-symbol contents are not among the staged tables (round 9
+//!   observed the branch live — 107 of the validated stream's 144 call
+//!   heads take it). [`read_coupling_index`] performs the fixed-width
+//!   branch directly and surfaces
+//!   [`Error::CouplingIndexTreeUnavailable`] for the VLC branch rather
+//!   than guessing.
+//! - The **§4.3 pan-coefficient values** are recovered `.rdata` tables
+//!   ([`crate::coupling::coupling_pan_table`]); the mirror-index closed
+//!   form is pinned (§4.2, wired in
 //!   [`crate::spectral`]).
 //!
 //! ## Wall-respect note
@@ -75,8 +78,8 @@ pub const CTX_SUBBAND_COUNT_OFFSET: u32 = 0x18;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CouplingReadMode {
     /// The leading flag bit was **set** — each coupling-band index is
-    /// VLC-coded via the `cook.dll!0x3a50` walk over the §3.2 BSS-built
-    /// codebooks (the recorded blocker).
+    /// VLC-coded via the `cook.dll!0x3a50` walk over the unstaged
+    /// coupling-index tree (the recorded gap).
     Vlc,
     /// The leading flag bit was **clear** — each coupling-band index is a
     /// fixed-width field (`read-n-bits` with `n =` the per-flavor coupling
@@ -171,7 +174,7 @@ mod tests {
     #[test]
     fn read_mode_flag_set_is_vlc() {
         // Leading bit 1 → VLC mode (then the index read would descend the
-        // §3.2 BSS codebooks).
+        // unstaged coupling-index tree).
         let frame = [0b1000_0000u8, 0, 0, 0, 0, 0, 0, 0];
         let mut reader = FrameBitReader::new(&frame);
         let mode = read_coupling_mode(&mut reader, 3);
@@ -238,7 +241,7 @@ mod tests {
 
     #[test]
     fn vlc_index_surfaces_bss_blocker() {
-        // The VLC branch descends the §3.2 BSS codebooks (docs-gap #1775).
+        // The VLC branch descends the unstaged coupling-index tree.
         let mut reader = FrameBitReader::new(&[0u8; 4]);
         assert_eq!(
             read_coupling_index(&mut reader, CouplingReadMode::Vlc).unwrap_err(),

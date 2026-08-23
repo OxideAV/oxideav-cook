@@ -25,7 +25,7 @@
 //!
 //! With this module every stage between the §3.2 entropy blocker and
 //! the emitted PCM bytes is wired; the entropy-decoded spectra remain
-//! the caller's GAP-sourced input (docs-gap #1775), and the
+//! the caller's input (normally the wired §3 entropy read's output), and the
 //! **frame-length synthesis window** is a caller input too (the stored
 //! table holds only the 3/7/15/31/64 rows — the `2 × samples_per_frame`
 //! window is runtime-built like the codebooks, a recorded GAP).

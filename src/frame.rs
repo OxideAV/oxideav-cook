@@ -450,7 +450,7 @@ pub struct StereoCoupling<'a> {
 /// per-band [`reconstruct_spectrum`] fill (§3.1, over the §2.1 subband
 /// geometry) to the §4 [`decouple_stereo`] split, routed by `channels`.
 /// All entropy-dependent inputs — the per-band decoded values + sign bits
-/// (§3.2 BSS GAP), the per-band gains/scales, and the coupling indices +
+/// (normally the wired §3 entropy read's output), the per-band gains/scales, and the coupling indices +
 /// `coef` table (§4.3 BSS GAP) — are caller inputs; this function performs
 /// only the trace's pinned reconstruction arithmetic.
 ///
