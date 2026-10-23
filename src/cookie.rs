@@ -48,7 +48,7 @@
 //! a typed error rather than silently building a stereo cookie out of
 //! their bytes.
 
-use crate::{flavor::FlavorRecord, Error};
+use crate::{Error, flavor::FlavorRecord};
 
 /// Selector boundary. Values `>= SELECTOR_EXTENDED` select the
 /// **extended cookie layout** (the 16-byte grid this parser consumes).

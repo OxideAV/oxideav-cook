@@ -25,8 +25,8 @@
 #![allow(dead_code)]
 
 use oxideav_cook::{
-    flavor_record, CommonMode, CookCookie, DecodeConfig, DecodeGate, Descriptor, Driver, Error,
-    EXTENDED_COOKIE_LEN, RADECODE_FLAGS_DECODE,
+    CommonMode, CookCookie, DecodeConfig, DecodeGate, Descriptor, Driver, EXTENDED_COOKIE_LEN,
+    Error, RADECODE_FLAGS_DECODE, flavor_record,
 };
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/FUN_RM_32.rm");

@@ -35,7 +35,7 @@
 
 use std::collections::VecDeque;
 
-use crate::{init::DecodeConfig, Error};
+use crate::{Error, init::DecodeConfig};
 
 /// FIFO carry buffer between per-frame synthesis PCM and the per-call
 /// `RADecode` output budget (spec/01 §5 `+0x20` carry accounting,

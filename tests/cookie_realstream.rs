@@ -5,7 +5,7 @@
 //! Cook stream. Every field the cookie carries must agree with the named
 //! flavor record the stream header selects (flavor 21).
 
-use oxideav_cook::{flavor_record, CookCookie};
+use oxideav_cook::{CookCookie, flavor_record};
 
 /// The 16-byte extradata cookie of the real stream.
 const FUN_RM_32_COOKIE: [u8; 16] = [

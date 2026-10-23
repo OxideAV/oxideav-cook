@@ -39,12 +39,12 @@
 //! transform — the only non-fabricating completion.
 
 use crate::{
+    Error,
     assembler::CallPcmAssembler,
     frame::FrameSpectrum,
     init::DecodeConfig,
     pcm::{interleave_stereo, pcm_i16le},
     synthesis::Synthesizer,
-    Error,
 };
 
 /// Post-entropy synthesis backend: per-channel §5 synthesis engines +
@@ -172,13 +172,13 @@ impl SynthesisBackend {
                 return Err(Error::FrameSpectrumChannelMismatch {
                     got: 1,
                     expected: other,
-                })
+                });
             }
             (FrameSpectrum::Stereo(_), other) => {
                 return Err(Error::FrameSpectrumChannelMismatch {
                     got: 2,
                     expected: other,
-                })
+                });
             }
         };
         self.assembler.push_frame_pcm(&pcm_i16le(&samples))

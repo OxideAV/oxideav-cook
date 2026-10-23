@@ -54,12 +54,12 @@
 //! parameters, never fabricated.
 
 use crate::{
+    Error,
     bitreader::FrameBitReader,
     category_assignment::assign_band_categories,
-    reconstruct::{decouple_stereo_recovered, StereoSpectra},
-    spectral_decode::{decode_band_coefficients, BandCategory},
+    reconstruct::{StereoSpectra, decouple_stereo_recovered},
+    spectral_decode::{BandCategory, decode_band_coefficients},
     subband::SubbandGeometry,
-    Error,
 };
 
 /// Decode one channel's spectral entropy section straight to its
@@ -310,7 +310,7 @@ mod tests {
                 bits.push(((v >> b) & 1) as u8);
             }
         }
-        while bits.len() % 32 != 0 {
+        while !bits.len().is_multiple_of(32) {
             bits.push(0);
         }
         let mut bytes = vec![0u8; bits.len() / 8];

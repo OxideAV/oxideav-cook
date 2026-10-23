@@ -44,7 +44,7 @@
 //! a recorded gap. This module wires the branch whose indexing *is*
 //! pinned (`[level*4 + row_base]`, level-keyed).
 
-use crate::{category::CategoryIndex, spectral::sign_from_bit, tables, Error};
+use crate::{Error, category::CategoryIndex, spectral::sign_from_bit, tables};
 
 /// RVA of the category-expectation magnitude table
 /// (`tables/category-expectation.meta`).

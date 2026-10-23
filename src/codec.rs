@@ -282,9 +282,10 @@ mod tests {
         assert!(tags.iter().any(
             |(tag, id)| **tag == CodecTag::fourcc(&COOK_FOURCC) && id.as_str() == CODEC_ID_STR
         ));
-        assert!(tags
-            .iter()
-            .any(|(tag, id)| **tag == CodecTag::matroska(MATROSKA_CODEC_ID)
-                && id.as_str() == CODEC_ID_STR));
+        assert!(
+            tags.iter()
+                .any(|(tag, id)| **tag == CodecTag::matroska(MATROSKA_CODEC_ID)
+                    && id.as_str() == CODEC_ID_STR)
+        );
     }
 }

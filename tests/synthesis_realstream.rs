@@ -25,8 +25,8 @@
 //! module is built standalone in `cargo test`.
 
 use oxideav_cook::{
-    flavor_record, CookCookie, DecodeConfig, Descriptor, Driver, Error, FrameSpectrum,
-    StereoSpectra, SynthesisBackend, EXTENDED_COOKIE_LEN,
+    CookCookie, DecodeConfig, Descriptor, Driver, EXTENDED_COOKIE_LEN, Error, FrameSpectrum,
+    StereoSpectra, SynthesisBackend, flavor_record,
 };
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/FUN_RM_32.rm");

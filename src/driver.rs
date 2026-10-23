@@ -93,11 +93,11 @@
 use std::borrow::Cow;
 
 use crate::{
-    descramble::{descramble_packet, CommonMode},
+    Error,
+    descramble::{CommonMode, descramble_packet},
     init::DecodeConfig,
     session::CallSession,
     subpacket::SubPacketLayout,
-    Error,
 };
 
 /// The backend frame-decode gate derived from `RADecode`'s `flags`

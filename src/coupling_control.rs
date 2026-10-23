@@ -60,7 +60,7 @@
 //! trace's `read-n-bits(n=[ctx+0x1c])`; the VLC branch and the band
 //! boundary are surfaced as the documented blocker / GAP, not guessed.
 
-use crate::{bitreader::FrameBitReader, Error};
+use crate::{Error, bitreader::FrameBitReader};
 
 /// Context offset of the per-flavor coupling-index bit width
 /// (`+0x1c`, `spec/05` §4.1: *"`read-n-bits` with `n` = context `+0x1c`,

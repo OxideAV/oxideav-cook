@@ -58,7 +58,7 @@
 //! arithmetic. This module classifies the selectors; it does not perform
 //! the joint-stereo / multichannel coupling DSP.
 
-use crate::{flavor::FlavorRecord, Error};
+use crate::{Error, flavor::FlavorRecord};
 
 /// Typed view of a flavor record's `+0x04` **stereo mode** selector.
 ///
@@ -382,7 +382,7 @@ pub fn split_coupled_recovered(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flavor::{flavor_record, iter_flavor_records, FLAVOR_COUNT};
+    use crate::flavor::{FLAVOR_COUNT, flavor_record, iter_flavor_records};
 
     #[test]
     fn stereo_mode_classifies_documented_values() {

@@ -66,9 +66,9 @@
 //! geometry and the mirror-index closed form is wired.
 
 use crate::{
+    Error,
     category::CategoryIndex,
     tables::{category_vector_dim_hi, category_vector_dim_lo, spectral_codebook_dims},
-    Error,
 };
 
 /// Number of spectral Huffman codebooks (`spec/05 §3.1`: *"There are
@@ -643,7 +643,7 @@ mod tests {
         let (l2, r2) = split_coupled_coefficient(c, 2, &coef).unwrap();
         assert_eq!(l2, 0.0); // c * coef[2]
         assert_eq!(r2, 2.0); // c * coef[0]
-                             // Centre index: both channels read the same partner-equal entry.
+        // Centre index: both channels read the same partner-equal entry.
         let (l1, r1) = split_coupled_coefficient(c, 1, &coef).unwrap();
         assert_eq!(l1, r1, "centre index pans equally");
     }

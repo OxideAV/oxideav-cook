@@ -118,7 +118,7 @@ pub fn mlt_direct(block: &[f32]) -> Result<Vec<f32>, Error> {
     if block.is_empty() {
         return Err(Error::TransformSizeZero);
     }
-    if block.len() % 2 != 0 {
+    if !block.len().is_multiple_of(2) {
         return Err(Error::TransformInputLengthOdd { got: block.len() });
     }
     let n = block.len() / 2;

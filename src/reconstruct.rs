@@ -68,10 +68,10 @@
 //! the trace's own. No BSS-resident bytes are guessed.
 
 use crate::{
+    Error,
     category::CategoryIndex,
     spectral::{spectral_coefficient, split_coupled_coefficient},
     subband::SubbandGeometry,
-    Error,
 };
 
 /// The per-band inputs the §3.1 dequant fill consumes for one subband.
@@ -560,7 +560,7 @@ mod tests {
         let total = geom.total_coded_lines() as usize;
         let coupled = vec![2.0f32; total];
         let coef = [1.0f32, std::f32::consts::FRAC_1_SQRT_2, 0.0]; // Ncoup=3.
-                                                                   // One coupling band [3..4); centre index 1 partners with itself.
+        // One coupling band [3..4); centre index 1 partners with itself.
         let stereo = decouple_stereo(&coupled, &geom, 3..4, &[1], &coef).unwrap();
         let range = geom.line_range(3).unwrap();
         let (lo, hi) = (range.start as usize, range.end as usize);
@@ -590,7 +590,7 @@ mod tests {
         let geom = SubbandGeometry::new(20).unwrap();
         let coupled = vec![1.0f32; geom.total_coded_lines() as usize];
         let coef = [1.0f32, 0.0]; // Ncoup = 2.
-                                  // Index 5 >= Ncoup=2.
+        // Index 5 >= Ncoup=2.
         assert_eq!(
             decouple_stereo(&coupled, &geom, 3..4, &[5], &coef).unwrap_err(),
             Error::CouplingIndexOutOfRange { got: 5, ncoup: 2 }

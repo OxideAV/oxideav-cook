@@ -78,15 +78,15 @@
 //! input ([`decode_frame_body`]'s `band_gains`), not fabricated.
 
 use crate::{
+    Error,
     bitreader::FrameBitReader,
     category_assignment::assign_categories,
     coupling::CouplingPanWidth,
-    coupling_control::{read_coupling_mode, read_fixed_coupling_index, CouplingReadMode},
-    frame_decode::{decode_frame_spectrum, DecodedSpectrum, FrameCoupling},
-    reconstruct::{decouple_stereo, reconstruct_spectrum, BandReconstruction, StereoSpectra},
+    coupling_control::{CouplingReadMode, read_coupling_mode, read_fixed_coupling_index},
+    frame_decode::{DecodedSpectrum, FrameCoupling, decode_frame_spectrum},
+    reconstruct::{BandReconstruction, StereoSpectra, decouple_stereo, reconstruct_spectrum},
     spectral_decode::BandCategory,
     subband::SubbandGeometry,
-    Error,
 };
 
 /// The per-stream §0.2 frame-layout parameters the walk consumes.
@@ -713,8 +713,8 @@ mod tests {
             fields.push((j, 4));
         }
         fields.push((17, 6)); // the seed field the extractor re-derived.
-                              // Field 5 stand-in: 100 arbitrary bits (the injected values
-                              // replace their decode).
+        // Field 5 stand-in: 100 arbitrary bits (the injected values
+        // replace their decode).
         for _ in 0..100 {
             fields.push((1, 1));
         }

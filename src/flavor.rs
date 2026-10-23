@@ -393,9 +393,11 @@ mod tests {
             assert_eq!(Some(*rec), flavor_record(*idx));
         }
         // The sentinel must be absent from the playable walk.
-        assert!(playable
-            .iter()
-            .all(|(idx, _)| *idx != SENTINEL_FLAVOR_INDEX));
+        assert!(
+            playable
+                .iter()
+                .all(|(idx, _)| *idx != SENTINEL_FLAVOR_INDEX)
+        );
     }
 
     #[test]

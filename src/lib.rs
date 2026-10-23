@@ -394,10 +394,10 @@ pub mod transform;
 // `CookCookie` closure (`FlavorRecord` is reachable through
 // `CookCookie::matches_flavor`).
 pub use codec::{
-    make_decoder, register, register_codecs, CookDecoder, CODEC_ID_STR, COOK_FOURCC,
-    MATROSKA_CODEC_ID,
+    CODEC_ID_STR, COOK_FOURCC, CookDecoder, MATROSKA_CODEC_ID, make_decoder, register,
+    register_codecs,
 };
-pub use cookie::{CookCookie, SelectorFamily, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED};
+pub use cookie::{CookCookie, EXTENDED_COOKIE_LEN, SELECTOR_EXTENDED, SelectorFamily};
 pub use flavor::FlavorRecord;
 
 // internal — exposed for tests/fuzz; not part of the stable API
@@ -407,149 +407,149 @@ pub use assembler::CallPcmAssembler;
 pub use backend::SynthesisBackend;
 #[doc(hidden)]
 pub use bit_alloc::{
-    bit_alloc_category_for_position, category_bit_cost, BitAllocAxisPosition, BitAllocCategory,
-    BIT_ALLOC_AXIS_LEN, BIT_ALLOC_CATEGORY_COUNT, CATEGORY_COST_LUT_RVA,
-    MAX_BIT_ALLOC_AXIS_POSITION, MAX_BIT_ALLOC_CATEGORY,
+    BIT_ALLOC_AXIS_LEN, BIT_ALLOC_CATEGORY_COUNT, BitAllocAxisPosition, BitAllocCategory,
+    CATEGORY_COST_LUT_RVA, MAX_BIT_ALLOC_AXIS_POSITION, MAX_BIT_ALLOC_CATEGORY,
+    bit_alloc_category_for_position, category_bit_cost,
 };
 #[doc(hidden)]
 pub use bitreader::{
-    FrameBitReader, CTX_BIT_CURSOR_OFFSET, CTX_BIT_LIMIT_OFFSET, CTX_BIT_POSITION_OFFSET,
-    CTX_WORD_POINTER_OFFSET, WORD_BITS, WORD_BYTES,
+    CTX_BIT_CURSOR_OFFSET, CTX_BIT_LIMIT_OFFSET, CTX_BIT_POSITION_OFFSET, CTX_WORD_POINTER_OFFSET,
+    FrameBitReader, WORD_BITS, WORD_BYTES,
 };
 #[doc(hidden)]
 pub use category::{
-    category_parameters, gain_step_via_scale_ladder, CategoryIndex, CategoryParameters,
-    CATEGORY_COUNT, GAIN_STEP_CENTRE_CATEGORY, MAX_CATEGORY_INDEX,
+    CATEGORY_COUNT, CategoryIndex, CategoryParameters, GAIN_STEP_CENTRE_CATEGORY,
+    MAX_CATEGORY_INDEX, category_parameters, gain_step_via_scale_ladder,
 };
 #[doc(hidden)]
 pub use category_assignment::{
-    assign_band_categories, assign_base_categories, assign_base_offset, assign_categories,
-    base_category, category_cost, refine_categories, total_cost, CategoryAssignment,
-    BASE_CONSTANT_K, BISECTION_STEPS, CATEGORY_CLIP_HI, CATEGORY_CLIP_LO, OFFSET_START,
-    REFINEMENT_CAP_SLACK, REFINEMENT_TARGET_FACTOR,
+    BASE_CONSTANT_K, BISECTION_STEPS, CATEGORY_CLIP_HI, CATEGORY_CLIP_LO, CategoryAssignment,
+    OFFSET_START, REFINEMENT_CAP_SLACK, REFINEMENT_TARGET_FACTOR, assign_band_categories,
+    assign_base_categories, assign_base_offset, assign_categories, base_category, category_cost,
+    refine_categories, total_cost,
 };
 #[doc(hidden)]
-pub use codebook::{spectral_huffman, SpectralHuffman, CODEBOOK_COUNT};
+pub use codebook::{CODEBOOK_COUNT, SpectralHuffman, spectral_huffman};
 #[doc(hidden)]
 pub use coupling::{
-    coupling_pan_pair, coupling_pan_table, split_coupled_recovered, CouplingPanWidth,
-    COUPLING_PAN_DISPATCH_RVA, COUPLING_PAN_TABLE_RVA,
+    COUPLING_PAN_DISPATCH_RVA, COUPLING_PAN_TABLE_RVA, CouplingPanWidth, coupling_pan_pair,
+    coupling_pan_table, split_coupled_recovered,
 };
 #[doc(hidden)]
-pub use coupling::{CouplingMode, StereoMode, STEREO_MODE_MAX, STEREO_MODE_MIN};
+pub use coupling::{CouplingMode, STEREO_MODE_MAX, STEREO_MODE_MIN, StereoMode};
 #[doc(hidden)]
 pub use coupling_control::{
-    read_coupling_index, read_coupling_mode, read_fixed_coupling_index, CouplingReadMode,
-    CTX_COUPLING_INDEX_BITS_OFFSET, CTX_SUBBAND_COUNT_OFFSET,
+    CTX_COUPLING_INDEX_BITS_OFFSET, CTX_SUBBAND_COUNT_OFFSET, CouplingReadMode,
+    read_coupling_index, read_coupling_mode, read_fixed_coupling_index,
 };
 #[doc(hidden)]
-pub use descramble::{descramble_packet, xor_descramble, xor_descramble_into, xor_key, CommonMode};
+pub use descramble::{CommonMode, descramble_packet, xor_descramble, xor_descramble_into, xor_key};
 #[doc(hidden)]
 pub use driver::{DecodeGate, Driver, PreparedCall};
 #[doc(hidden)]
 pub use expectation::{
-    dequantise_level, expectation_magnitude, CATEGORY_EXPECTATION_RVA, CATEGORY_EXPECTATION_STRIDE,
+    CATEGORY_EXPECTATION_RVA, CATEGORY_EXPECTATION_STRIDE, dequantise_level, expectation_magnitude,
 };
 #[doc(hidden)]
 pub use flavor::{
-    flavor_indices_matching_cookie, flavor_record, iter_flavor_records,
-    iter_playable_flavor_records, FLAVOR_COUNT, RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED,
-    RA_GET_NUMBER_OF_FLAVORS_ADVERTISED, SENTINEL_FLAVOR_INDEX,
+    FLAVOR_COUNT, RA_GET_NUMBER_OF_FLAVORS_ADVERTISED, RA_GET_NUMBER_OF_FLAVORS2_ADVERTISED,
+    SENTINEL_FLAVOR_INDEX, flavor_indices_matching_cookie, flavor_record, iter_flavor_records,
+    iter_playable_flavor_records,
 };
 #[doc(hidden)]
 pub use flavor_property::{
-    FlavorPropertyId, FlavorPropertyKind, FLAVOR_PROPERTY_ID_COUNT, FLAVOR_PROPERTY_INTEGER_LEN,
-    FLAVOR_PROPERTY_JUMP_TABLE_RVA, MAX_FLAVOR_PROPERTY_ID, STRING_PROPERTY_IDS,
+    FLAVOR_PROPERTY_ID_COUNT, FLAVOR_PROPERTY_INTEGER_LEN, FLAVOR_PROPERTY_JUMP_TABLE_RVA,
+    FlavorPropertyId, FlavorPropertyKind, MAX_FLAVOR_PROPERTY_ID, STRING_PROPERTY_IDS,
 };
 #[doc(hidden)]
 pub use frame::{
-    decode_frame_body, read_frame_head, reconstruct_frame_spectrum, CouplingMap, EnvelopeInjection,
-    FrameBody, FrameHead, FrameHeadCoupling, FrameLayout, FrameSpectrum, StereoCoupling,
+    CouplingMap, EnvelopeInjection, FrameBody, FrameHead, FrameHeadCoupling, FrameLayout,
+    FrameSpectrum, StereoCoupling, decode_frame_body, read_frame_head, reconstruct_frame_spectrum,
 };
 #[doc(hidden)]
 pub use frame_decode::{
-    decode_frame_spectrum, decode_frame_spectrum_assigned, decode_spectrum,
-    decode_spectrum_assigned, DecodedSpectrum, FrameCoupling,
+    DecodedSpectrum, FrameCoupling, decode_frame_spectrum, decode_frame_spectrum_assigned,
+    decode_spectrum, decode_spectrum_assigned,
 };
 #[doc(hidden)]
 pub use gain::{
-    apply_gain_blocks, apply_gain_envelope, expand_gain_envelope, gain_factor_for_index,
-    GainSegment, GAIN_POS_WINDOW,
+    GAIN_POS_WINDOW, GainSegment, apply_gain_blocks, apply_gain_envelope, expand_gain_envelope,
+    gain_factor_for_index,
 };
 #[doc(hidden)]
 pub use imlt::{imlt, imlt_direct, mlt_direct};
 #[doc(hidden)]
 pub use index_decomp::{
-    decompose_index, index_radix, index_recip, reciprocal_quotient, INDEX_RADIX, INDEX_RECIP,
-    INDEX_RECIP_COUNT, INDEX_RECIP_RVA, INDEX_RECIP_SCALE, INDEX_RECIP_SHIFT,
-    MAX_INDEX_RECIP_INDEX,
+    INDEX_RADIX, INDEX_RECIP, INDEX_RECIP_COUNT, INDEX_RECIP_RVA, INDEX_RECIP_SCALE,
+    INDEX_RECIP_SHIFT, MAX_INDEX_RECIP_INDEX, decompose_index, index_radix, index_recip,
+    reciprocal_quotient,
 };
 #[doc(hidden)]
 pub use init::{DecodeConfig, Descriptor, PCM_BYTES_PER_SAMPLE, RADECODE_FLAGS_DECODE};
 #[doc(hidden)]
 pub use mdct::{
-    long_full_window, long_full_window_unit, long_half_window, window_builder_consts,
-    window_builder_denominator, window_builder_half_bias, window_builder_phase, window_builder_pi,
-    LONG_TRANSFORM_N, MDCT_WINDOW_BUILDER_CONSTS_RVA,
+    LONG_TRANSFORM_N, MDCT_WINDOW_BUILDER_CONSTS_RVA, long_full_window, long_full_window_unit,
+    long_half_window, window_builder_consts, window_builder_denominator, window_builder_half_bias,
+    window_builder_phase, window_builder_pi,
 };
 #[doc(hidden)]
 pub use output_stage::{
-    apply_window, overlap_add, overlap_add_weighted, window_and_gain, windowed,
     OVERLAP_MIX_WEIGHT_HALF, OVERLAP_MIX_WEIGHT_HALF_RVA, OVERLAP_MIX_WEIGHT_THREE_QUARTER,
-    OVERLAP_MIX_WEIGHT_THREE_QUARTER_RVA,
+    OVERLAP_MIX_WEIGHT_THREE_QUARTER_RVA, apply_window, overlap_add, overlap_add_weighted,
+    window_and_gain, windowed,
 };
 #[doc(hidden)]
 pub use pcm::{f32_to_i16_sample, interleave_stereo, pcm_i16le, write_pcm_i16le};
 #[doc(hidden)]
 pub use quantiser::{
-    band_gain_magnitude, clip_quantiser_index, quantiser_level, QUANTISER_DIVISOR,
-    QUANTISER_DIVISOR_RVA,
+    QUANTISER_DIVISOR, QUANTISER_DIVISOR_RVA, band_gain_magnitude, clip_quantiser_index,
+    quantiser_level,
 };
 #[doc(hidden)]
 pub use reciprocal::{
-    reciprocal_for_denominator, reciprocal_one_twentieth, ReciprocalDenominator,
     RECIPROCAL_DENOMINATOR_MAX, RECIPROCAL_DENOMINATOR_MIN, RECIPROCAL_ONE_TWENTIETH_INDEX,
     RECIPROCAL_RUN_LEN, RECIPROCAL_TABLE_END_RVA, RECIPROCAL_TABLE_RVA,
-    RECIPROCAL_TRAILING_ZERO_INDEX,
+    RECIPROCAL_TRAILING_ZERO_INDEX, ReciprocalDenominator, reciprocal_for_denominator,
+    reciprocal_one_twentieth,
 };
 #[doc(hidden)]
 pub use reconstruct::{
-    decouple_stereo, decouple_stereo_recovered, reconstruct_band, reconstruct_spectrum,
-    BandReconstruction, StereoSpectra,
+    BandReconstruction, StereoSpectra, decouple_stereo, decouple_stereo_recovered,
+    reconstruct_band, reconstruct_spectrum,
 };
 #[doc(hidden)]
 pub use scale::{
-    pow2_scale_for_exponent, sqrt2_scale_for_exponent, ScaleExponent,
     POW2_SUBPOINTER_ELEMENT_OFFSET, POW2_SUBPOINTER_FIRST_EXPONENT, SCALE_EXPONENT_BIAS,
     SCALE_EXPONENT_MAX, SCALE_EXPONENT_MIN, SQRT2_SUBPOINTER_ELEMENT_OFFSET,
-    SQRT2_SUBPOINTER_FIRST_EXPONENT,
+    SQRT2_SUBPOINTER_FIRST_EXPONENT, ScaleExponent, pow2_scale_for_exponent,
+    sqrt2_scale_for_exponent,
 };
 #[doc(hidden)]
 pub use session::CallSession;
 #[doc(hidden)]
 pub use spectral::{
-    category_vector_dims, coefficients_for_symbols, coupling_table_len, mirror_partner_index,
-    sign_from_bit, spectral_coefficient, split_coupled_coefficient, symbols_for_band,
-    CategoryVectorDims, SpectralCodebook, CATEGORY_VECTOR_DIM_HI_RVA, CATEGORY_VECTOR_DIM_LO_RVA,
+    CATEGORY_VECTOR_DIM_HI_RVA, CATEGORY_VECTOR_DIM_LO_RVA, CategoryVectorDims,
     DEQUANT_SCALE_NONZERO, DEQUANT_SCALE_RVA, MAX_SPECTRAL_CODEBOOK_INDEX, SIGN_LUT, SIGN_LUT_RVA,
     SPECTRAL_CODEBOOK_COUNT, SPECTRAL_CODEBOOK_DIMS_RVA, SPECTRAL_CODEBOOK_LENGTH_PTRS_RVA,
-    SPECTRAL_CODEBOOK_VALUE_PTRS_RVA,
+    SPECTRAL_CODEBOOK_VALUE_PTRS_RVA, SpectralCodebook, category_vector_dims,
+    coefficients_for_symbols, coupling_table_len, mirror_partner_index, sign_from_bit,
+    spectral_coefficient, split_coupled_coefficient, symbols_for_band,
 };
 #[doc(hidden)]
 pub use spectral_decode::{
-    codebook_for_category, compose_symbol, decode_band, decode_band_coefficients,
-    decode_band_digits, decode_vector, decompose_symbol, natural_codebook_for, BandCategory,
-    SignedLevel, EMPTY_BAND_CATEGORY,
+    BandCategory, EMPTY_BAND_CATEGORY, SignedLevel, codebook_for_category, compose_symbol,
+    decode_band, decode_band_coefficients, decode_band_digits, decode_vector, decompose_symbol,
+    natural_codebook_for,
 };
 #[doc(hidden)]
 pub use spi::{
-    SpiExport, E_INVALIDARG, E_NOTIMPL, HR_UNRECOGNISED_SELECTOR, RASETFLAVOR_CONTEXT_OFFSET,
-    RA_NUMBER_OF_FLAVORS, RA_NUMBER_OF_FLAVORS2, SPI_EXPORT_COUNT, S_OK,
+    E_INVALIDARG, E_NOTIMPL, HR_UNRECOGNISED_SELECTOR, RA_NUMBER_OF_FLAVORS, RA_NUMBER_OF_FLAVORS2,
+    RASETFLAVOR_CONTEXT_OFFSET, S_OK, SPI_EXPORT_COUNT, SpiExport,
 };
 #[doc(hidden)]
 pub use subband::{
-    SubbandGeometry, LINES_PER_BAND, MAX_SUBBANDS, SUBBAND_CATEGORY_LUT_RVA, SUBBAND_HALF_SCALAR,
-    SUBBAND_HALF_SCALAR_RVA,
+    LINES_PER_BAND, MAX_SUBBANDS, SUBBAND_CATEGORY_LUT_RVA, SUBBAND_HALF_SCALAR,
+    SUBBAND_HALF_SCALAR_RVA, SubbandGeometry,
 };
 #[doc(hidden)]
 pub use subpacket::SubPacketLayout;
@@ -559,9 +559,9 @@ pub use synthesis::Synthesizer;
 oxideav_core::register!("cook", register);
 #[doc(hidden)]
 pub use transform::{
-    rotation_group, rotation_group_rva, rotation_table_end_rva, TRANSFORM_ROTATION_GROUP_COUNT,
-    TRANSFORM_ROTATION_GROUP_STRIDE, TRANSFORM_ROTATION_RVA,
-    TRANSFORM_ROTATION_SELECTOR_BASE_GROUP,
+    TRANSFORM_ROTATION_GROUP_COUNT, TRANSFORM_ROTATION_GROUP_STRIDE, TRANSFORM_ROTATION_RVA,
+    TRANSFORM_ROTATION_SELECTOR_BASE_GROUP, rotation_group, rotation_group_rva,
+    rotation_table_end_rva,
 };
 
 /// Crate-local error type. Concrete variants land as the rebuild rounds

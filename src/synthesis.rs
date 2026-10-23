@@ -53,7 +53,7 @@
 //! from the vendored table or from the caller. Nothing numeric is
 //! invented.
 
-use crate::{gain::apply_gain_blocks, imlt::imlt, mdct, Error};
+use crate::{Error, gain::apply_gain_blocks, imlt::imlt, mdct};
 
 /// Streaming per-channel §5 synthesis state — inverse transform →
 /// window → gain → overlap-add, with the previous block's tail carried
@@ -84,7 +84,7 @@ impl Synthesizer {
         if window.is_empty() {
             return Err(Error::TransformSizeZero);
         }
-        if window.len() % 2 != 0 {
+        if !window.len().is_multiple_of(2) {
             return Err(Error::TransformInputLengthOdd { got: window.len() });
         }
         Ok(Synthesizer {

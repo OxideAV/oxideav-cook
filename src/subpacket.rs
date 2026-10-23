@@ -70,7 +70,7 @@
 //! `crate::Error::NotImplemented` GAP — modelling it requires the
 //! backend's bitstream reader, which lands in a later round.
 
-use crate::{init::DecodeConfig, Error};
+use crate::{Error, init::DecodeConfig};
 
 /// Derived per-call sub-packet split for a wired [`DecodeConfig`].
 ///
@@ -185,7 +185,7 @@ impl SubPacketLayout {
     pub fn iter_call<'a>(
         &self,
         input: &'a [u8],
-    ) -> impl Iterator<Item = Result<&'a [u8], Error>> + 'a {
+    ) -> impl Iterator<Item = Result<&'a [u8], Error>> + 'a + use<'a> {
         let frame_bytes = self.frame_bytes as usize;
         let sub_packet_size = self.sub_packet_size as usize;
         let sub_packets_per_call = self.sub_packets_per_call as usize;

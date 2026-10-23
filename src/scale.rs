@@ -72,8 +72,8 @@
 //! access only, not the exponent-producing stage.
 
 use crate::{
-    tables::{pow2_exponent_table, sqrt2_scale_ladder},
     Error,
+    tables::{pow2_exponent_table, sqrt2_scale_ladder},
 };
 
 /// Lowest exponent both 127-entry ladders store (`k = -63`; both

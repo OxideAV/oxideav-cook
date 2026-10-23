@@ -22,7 +22,7 @@
 //! its own assertions; this file only walks the same fixture to obtain
 //! the validated 465-byte payloads.
 
-use oxideav_cook::{descramble_packet, xor_descramble, xor_key, CommonMode};
+use oxideav_cook::{CommonMode, descramble_packet, xor_descramble, xor_key};
 use std::borrow::Cow;
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/FUN_RM_32.rm");

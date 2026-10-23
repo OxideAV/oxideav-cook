@@ -84,12 +84,12 @@
 //! rows); no new algorithm is introduced.
 
 use crate::{
+    Error,
     category::CategoryIndex,
     codebook::SpectralHuffman,
     expectation::dequantise_level,
     index_decomp::{decompose_index, index_radix},
-    spectral::{symbols_for_band, CategoryVectorDims, SpectralCodebook},
-    Error,
+    spectral::{CategoryVectorDims, SpectralCodebook, symbols_for_band},
 };
 
 /// The guarded "empty band" category sentinel — `cook.dll!0x46c0` /
@@ -373,7 +373,7 @@ mod tests {
                 bits.push(((code >> b) & 1) as u8);
             }
         }
-        while bits.len() % 32 != 0 {
+        while !bits.len().is_multiple_of(32) {
             bits.push(0);
         }
         let mut bytes = vec![0u8; bits.len() / 8];
@@ -445,7 +445,7 @@ mod tests {
             1, 1, 0, 0, 0, // symbol C
         ];
         let line_count = want_digits.len() as u32; // exactly 3*dim
-                                                   // Compose each dim-chunk into a symbol, then pack its codeword.
+        // Compose each dim-chunk into a symbol, then pack its codeword.
         let mut words = Vec::new();
         for chunk in want_digits.chunks(dim as usize) {
             let symbol = compose_symbol(chunk, category).unwrap();
@@ -493,7 +493,7 @@ mod tests {
                 bits.push(((v >> b) & 1) as u8);
             }
         }
-        while bits.len() % 32 != 0 {
+        while !bits.len().is_multiple_of(32) {
             bits.push(0);
         }
         let mut bytes = vec![0u8; bits.len() / 8];

@@ -58,10 +58,10 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use crate::{
-    bitreader::FrameBitReader,
-    spectral::{SpectralCodebook, SPECTRAL_CODEBOOK_COUNT},
-    tables::{spectral_codebook_code_lengths, spectral_codebook_codes},
     Error,
+    bitreader::FrameBitReader,
+    spectral::{SPECTRAL_CODEBOOK_COUNT, SpectralCodebook},
+    tables::{spectral_codebook_code_lengths, spectral_codebook_codes},
 };
 
 /// A decode-ready spectral Huffman codebook: the (code, length) pairs of
@@ -261,7 +261,7 @@ mod tests {
             }
         }
         // Pad to a multiple of 32 bits so the reader's word view is clean.
-        while bits.len() % 32 != 0 {
+        while !bits.len().is_multiple_of(32) {
             bits.push(0);
         }
         let mut bytes = vec![0u8; bits.len() / 8];

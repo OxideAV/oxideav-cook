@@ -32,8 +32,8 @@
 //! only the typed table access.
 
 use crate::{
-    tables::{transform_rotation_coeffs, TRANSFORM_ROTATION_ROW_COUNT},
     Error,
+    tables::{TRANSFORM_ROTATION_ROW_COUNT, transform_rotation_coeffs},
 };
 
 /// `.rdata` base RVA of the iMDCT rotation-coefficient table (`0xa1b0`).

@@ -46,8 +46,8 @@
 //! read off the bitstream by this module.
 
 use crate::{
-    scale::{sqrt2_scale_for_exponent, ScaleExponent},
     Error,
+    scale::{ScaleExponent, sqrt2_scale_for_exponent},
 };
 
 /// `.rdata` head RVA of the `2^(k/2)` gain/dequant ladder

@@ -40,7 +40,7 @@
 //! that wants to know the transform frame length without committing
 //! to a full flavor cross-check yet.
 
-use crate::{cookie::CookCookie, flavor::FlavorRecord, Error};
+use crate::{Error, cookie::CookCookie, flavor::FlavorRecord};
 
 /// Bit 0 of `RADecode`'s `flags` argument, inverted, is the backend
 /// frame-decode gate.
@@ -201,7 +201,7 @@ impl DecodeConfig {
             return Err(Error::CookieFlavorMismatch);
         }
 
-        if frame_bytes % descriptor.sub_packet_size as u32 != 0 {
+        if !frame_bytes.is_multiple_of(descriptor.sub_packet_size as u32) {
             return Err(Error::FrameNotDivisibleBySubPacket {
                 frame_bytes,
                 sub_packet_size: descriptor.sub_packet_size,

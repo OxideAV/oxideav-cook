@@ -64,7 +64,7 @@
 //! - [`crate::Error::CallInputLengthMismatch`] /
 //!   [`crate::Error::CallOutputLengthMismatch`] surface misuse.
 
-use crate::{init::DecodeConfig, subpacket::SubPacketLayout, Error};
+use crate::{Error, init::DecodeConfig, subpacket::SubPacketLayout};
 
 /// Stateful walker over a `RADecode` call sequence.
 ///

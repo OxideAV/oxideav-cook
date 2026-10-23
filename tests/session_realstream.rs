@@ -19,7 +19,7 @@
 //! Source: `docs/audio/cook/spec/01-cook-decoder-structure.md` §5 +
 //! `docs/audio/cook/validation/04-cook-stream-validation.md` §5.
 
-use oxideav_cook::{flavor_record, CallSession, CookCookie, DecodeConfig, Descriptor, Error};
+use oxideav_cook::{CallSession, CookCookie, DecodeConfig, Descriptor, Error, flavor_record};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/FUN_RM_32.rm");
 

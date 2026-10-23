@@ -69,9 +69,9 @@
 //! monotone-nondecreasing structural fact is wired here.
 
 use crate::{
+    Error,
     category::CategoryIndex,
     tables::{category_cost_lut, category_index_lut},
-    Error,
 };
 
 /// `.rdata` RVA of the per-category expected bit-cost LUT (`0x8f38`,

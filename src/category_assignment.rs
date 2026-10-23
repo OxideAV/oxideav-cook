@@ -122,10 +122,10 @@
 //! constant ([`REFINEMENT_CAP_SLACK`]) is recorded with its window.
 
 use crate::{
+    Error,
     bit_alloc::category_bit_cost,
     category::CategoryIndex,
     spectral_decode::{BandCategory, EMPTY_BAND_CATEGORY},
-    Error,
 };
 
 /// The base additive constant `K = 32` in the per-band category

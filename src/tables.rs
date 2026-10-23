@@ -1647,9 +1647,11 @@ mod tests {
         assert_eq!(rows[6].width, "7");
         // The allocator row consumes no bits.
         assert_eq!(rows[7].width, "0");
-        assert!(rows[7]
-            .semantics
-            .contains("budget == bit_limit - bit_cursor"));
+        assert!(
+            rows[7]
+                .semantics
+                .contains("budget == bit_limit - bit_cursor")
+        );
         // The envelope VLC selects from the 31-entry tree family.
         assert!(rows[5].semantics.contains("31-entry tree array"));
     }

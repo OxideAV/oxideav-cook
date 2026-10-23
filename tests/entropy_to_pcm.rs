@@ -19,9 +19,9 @@
 //! own pinned arithmetic and recovered tables.
 
 use oxideav_cook::{
+    BandCategory, CategoryIndex, FrameBitReader, SpectralCodebook, SubbandGeometry, Synthesizer,
     assign_band_categories, category_vector_dims, codebook_for_category, compose_symbol,
-    decode_spectrum, decode_spectrum_assigned, f32_to_i16_sample, spectral_huffman, BandCategory,
-    CategoryIndex, FrameBitReader, SpectralCodebook, SubbandGeometry, Synthesizer,
+    decode_spectrum, decode_spectrum_assigned, f32_to_i16_sample, spectral_huffman,
 };
 
 /// Pack `(value, nbits)` fields MSB-first into a byte buffer (the frame
@@ -33,7 +33,7 @@ fn pack(fields: &[(u32, u32)]) -> Vec<u8> {
             bits.push(((v >> b) & 1) as u8);
         }
     }
-    while bits.len() % 32 != 0 {
+    while !bits.len().is_multiple_of(32) {
         bits.push(0);
     }
     let mut bytes = vec![0u8; bits.len() / 8];

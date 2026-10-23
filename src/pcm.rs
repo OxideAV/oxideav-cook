@@ -64,7 +64,7 @@ pub fn write_pcm_i16le(samples: &[f32], out: &mut [u8]) -> Result<(), Error> {
             expected,
         });
     }
-    for (chunk, &s) in out.chunks_exact_mut(2).zip(samples.iter()) {
+    for (chunk, &s) in out.as_chunks_mut::<2>().0.iter_mut().zip(samples.iter()) {
         chunk.copy_from_slice(&f32_to_i16_sample(s).to_le_bytes());
     }
     Ok(())

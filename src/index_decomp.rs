@@ -182,7 +182,9 @@ mod tests {
         // tables/README.md row 0x8fac.
         assert_eq!(
             INDEX_RECIP,
-            [0x12493, 0x1999a, 0x24925, 0x33334, 0x40000, 0x55556, 0x80000]
+            [
+                0x12493, 0x1999a, 0x24925, 0x33334, 0x40000, 0x55556, 0x80000
+            ]
         );
         assert_eq!(INDEX_RECIP_COUNT, 7);
         assert_eq!(MAX_INDEX_RECIP_INDEX, 6);

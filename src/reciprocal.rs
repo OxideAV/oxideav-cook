@@ -49,8 +49,8 @@
 //! table access only.
 
 use crate::{
-    tables::{reciprocal_1_over_n, RECIPROCAL_LEN},
     Error,
+    tables::{RECIPROCAL_LEN, reciprocal_1_over_n},
 };
 
 /// RVA of the reciprocal table head

@@ -70,9 +70,9 @@
 //! "parallel index" structural fact is wired here.
 
 use crate::{
-    scale::{sqrt2_scale_for_exponent, ScaleExponent},
-    tables::{category_level_count, gain_bias_ramp, gain_step_2pow_half},
     Error,
+    scale::{ScaleExponent, sqrt2_scale_for_exponent},
+    tables::{category_level_count, gain_bias_ramp, gain_step_2pow_half},
 };
 
 /// Number of gain/quantiser categories the per-band quantiser worker

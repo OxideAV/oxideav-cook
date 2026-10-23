@@ -19,8 +19,8 @@
 //! hand it.
 
 use oxideav_cook::{
-    compose_symbol, decode_frame_body, f32_to_i16_sample, spectral_huffman, CategoryIndex,
-    DecodedSpectrum, EnvelopeInjection, Error, FrameLayout, Synthesizer,
+    CategoryIndex, DecodedSpectrum, EnvelopeInjection, Error, FrameLayout, Synthesizer,
+    compose_symbol, decode_frame_body, f32_to_i16_sample, spectral_huffman,
 };
 
 /// Pack `(value, nbits)` fields MSB-first into exactly `len` bytes.

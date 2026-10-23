@@ -38,8 +38,8 @@
 //! real bitstream.
 
 use oxideav_cook::{
-    flavor_record, CookCookie, DecodeConfig, Descriptor, EXTENDED_COOKIE_LEN, PCM_BYTES_PER_SAMPLE,
-    RADECODE_FLAGS_DECODE,
+    CookCookie, DecodeConfig, Descriptor, EXTENDED_COOKIE_LEN, PCM_BYTES_PER_SAMPLE,
+    RADECODE_FLAGS_DECODE, flavor_record,
 };
 
 /// The bundled fixture. SHA-256 pinned below.
