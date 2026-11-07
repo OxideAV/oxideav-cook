@@ -72,6 +72,7 @@ pub const SENTINEL_FLAVOR_INDEX: u8 = 30;
 ///
 /// All fields are stored as `u32` exactly as the table encodes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FlavorRecord {
     /// Joint-coding / coupling-region selector (0 for plain mono/stereo
     /// flavors; small non-zero values for coupled stereo / multichannel).
@@ -88,6 +89,78 @@ pub struct FlavorRecord {
     pub frame_bytes: u32,
     /// Sample rate in Hz: 8000 / 11025 / 22050 / 44100.
     pub sample_rate_hz: u32,
+}
+
+impl FlavorRecord {
+    /// Build a `FlavorRecord` from its mandatory fields.
+    pub fn new(
+        coupling_mode: u32,
+        stereo_mode: u32,
+        samples_per_frame: u32,
+        channels: u32,
+        subband_count: u32,
+        frame_bytes: u32,
+        sample_rate_hz: u32,
+    ) -> Self {
+        Self {
+            coupling_mode,
+            stereo_mode,
+            samples_per_frame,
+            channels,
+            subband_count,
+            frame_bytes,
+            sample_rate_hz,
+        }
+    }
+
+    /// Set `coupling_mode`.
+    #[must_use]
+    pub fn with_coupling_mode(mut self, v: u32) -> Self {
+        self.coupling_mode = v;
+        self
+    }
+
+    /// Set `stereo_mode`.
+    #[must_use]
+    pub fn with_stereo_mode(mut self, v: u32) -> Self {
+        self.stereo_mode = v;
+        self
+    }
+
+    /// Set `samples_per_frame`.
+    #[must_use]
+    pub fn with_samples_per_frame(mut self, v: u32) -> Self {
+        self.samples_per_frame = v;
+        self
+    }
+
+    /// Set `channels`.
+    #[must_use]
+    pub fn with_channels(mut self, v: u32) -> Self {
+        self.channels = v;
+        self
+    }
+
+    /// Set `subband_count`.
+    #[must_use]
+    pub fn with_subband_count(mut self, v: u32) -> Self {
+        self.subband_count = v;
+        self
+    }
+
+    /// Set `frame_bytes`.
+    #[must_use]
+    pub fn with_frame_bytes(mut self, v: u32) -> Self {
+        self.frame_bytes = v;
+        self
+    }
+
+    /// Set `sample_rate_hz`.
+    #[must_use]
+    pub fn with_sample_rate_hz(mut self, v: u32) -> Self {
+        self.sample_rate_hz = v;
+        self
+    }
 }
 
 impl FlavorRecord {

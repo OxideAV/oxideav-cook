@@ -567,6 +567,7 @@ pub use transform::{
 /// Crate-local error type. Concrete variants land as the rebuild rounds
 /// populate the codec pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
     /// Reserved placeholder for not-yet-implemented decode paths.
     NotImplemented,

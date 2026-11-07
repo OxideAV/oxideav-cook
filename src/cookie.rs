@@ -74,6 +74,7 @@ pub const EXTENDED_COOKIE_LEN: usize = 16;
 /// point or — for the GAP families — whether to stop and report a
 /// docs gap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SelectorFamily {
     /// `0x01000001`, `0x01000002`, `0x01000003` — the mono/stereo Cook
     /// transform decoder (backend constructor `0x1d20`, vtable
@@ -134,6 +135,7 @@ impl SelectorFamily {
 
 /// Parsed extended-selector extradata cookie.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CookCookie {
     /// 32-bit selector (`>= SELECTOR_EXTENDED`).
     pub selector: u32,
@@ -148,6 +150,69 @@ pub struct CookCookie {
     pub channels: u16,
     /// Stereo / coupling mode.
     pub stereo_mode: u16,
+}
+
+impl CookCookie {
+    /// Build a `CookCookie` from its mandatory fields.
+    pub fn new(
+        selector: u32,
+        samples_per_frame_x_channels: u16,
+        subband_count: u16,
+        reserved: u32,
+        channels: u16,
+        stereo_mode: u16,
+    ) -> Self {
+        Self {
+            selector,
+            samples_per_frame_x_channels,
+            subband_count,
+            reserved,
+            channels,
+            stereo_mode,
+        }
+    }
+
+    /// Set `selector`.
+    #[must_use]
+    pub fn with_selector(mut self, v: u32) -> Self {
+        self.selector = v;
+        self
+    }
+
+    /// Set `samples_per_frame_x_channels`.
+    #[must_use]
+    pub fn with_samples_per_frame_x_channels(mut self, v: u16) -> Self {
+        self.samples_per_frame_x_channels = v;
+        self
+    }
+
+    /// Set `subband_count`.
+    #[must_use]
+    pub fn with_subband_count(mut self, v: u16) -> Self {
+        self.subband_count = v;
+        self
+    }
+
+    /// Set `reserved`.
+    #[must_use]
+    pub fn with_reserved(mut self, v: u32) -> Self {
+        self.reserved = v;
+        self
+    }
+
+    /// Set `channels`.
+    #[must_use]
+    pub fn with_channels(mut self, v: u16) -> Self {
+        self.channels = v;
+        self
+    }
+
+    /// Set `stereo_mode`.
+    #[must_use]
+    pub fn with_stereo_mode(mut self, v: u16) -> Self {
+        self.stereo_mode = v;
+        self
+    }
 }
 
 impl CookCookie {

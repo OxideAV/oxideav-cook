@@ -6,6 +6,14 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `CookCookie::new` and `FlavorRecord::new` constructors plus `with_<field>` setters for building those records outside the crate.
+
+### Changed
+
+- API hygiene: `Error`, `SelectorFamily`, `CookCookie` and `FlavorRecord` are now `#[non_exhaustive]`, so future variants and fields are non-breaking. The internal DSP / table / decode modules were already `#[doc(hidden)]`.
+
 ## [0.0.3](https://github.com/OxideAV/oxideav-cook/compare/v0.0.2...v0.0.3) - 2026-10-23
 
 ### Other
