@@ -6,6 +6,100 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/OxideAV/oxideav-cook/compare/v0.0.2...v0.0.3) - 2026-10-23
+
+### Other
+
+- edition 2024, MSRV 1.95
+- doc-hygiene sweep — retire the closed §3.2/§1.1 gap narratives across module docs
+- registration surface names the real remaining gap — the unstaged envelope/coupling VLC trees
+- README — round-450 state; narrowed tree gaps; staged-field-value caveat
+- multi-frame streaming over the assembled §0.2 walk — synthetic frames to non-silent 16-bit PCM
+- §0.2 pre-spectral frame walk — head fields, envelope injection, budget rule, categories, spectral+pan split
+- subband geometry is 20 lines per coded band (dim_lo × dim_hi = 20 for every category)
+- §2.2 stage-2 refinement walk — vendor real-frame categories reproduced 34/34 on all three traced frames
+- consume docs rounds 9/10 — 0x8d0c tables are the §4.3 pan coefficients; vendor live-frame observation tables
+- fix frame doc intra-links to the exported imlt/Synthesizer items
+- README — reflect assembled §3→§5 chain + honest read-layout blocker
+- correct the stale frame-body blocker narrative (codebooks recovered)
+- add decode_frame_spectrum_assigned — value-array to routed mono/stereo spectrum
+- pin the recovered N=1024 MDCT + §4.3 coupling tables to their closed forms
+- vendor the staged §2.2 category-assignment constants table
+- mark internal DSP/table/decode surface #[doc(hidden)] for semver-checks
+- drive the full chain from the computed §2.2 categories to PCM in entropy_to_pcm
+- recover + wire the §2.2 category-assignment / bit-allocation loop (cook.dll!0x4800) — the last routing GAP
+- wire the framework codec registry + dual-API make_decoder
+- assemble entropy -> spectrum -> audible PCM (frame_decode) modulo the §2.2 category-assignment GAP
+- wire the recovered N=1024 long-transform window into §5 synthesis
+- apply the recovered §4.3 coupling rotation table — mirror-pan split with vendored values
+- wire the pinned §3 spectral band decode — codebook-by-category, magnitude digits, out-of-band sign bits (provenance/07 items 1-3)
+- wire the §3.1 level→value reconstruction — 0x8fc8 expectation rows + sign/gain assembly (provenance/07 item 2)
+- vendor the round-7/8 staged tables — runtime N=1024 MDCT window/twiddles, §4.3 coupling pan pairs, and the 0x8fac/0x9150/0xa148/0x8fc8 dequant tables
+- add CI / crates.io / docs.rs / MIT-license badges
+- document round — §3.2 codebook recovery + VLC walk + digit bridge
+- wire typed runtime-window-builder const accessors (0x8c20)
+- bridge the §3.1 VLC walk to §2.2 per-coefficient quantised digits
+- wire the §2.2 per-category bit-cost LUT (0x8f38)
+- wire typed iMDCT rotation-coefficient accessors (0xa1b0)
+- implement the §3.1 spectral Huffman VLC walk (cook.dll!0x3a50)
+- vendor §3.2 spectral codebooks + §2.2 cost LUT + 0xa1b0 rotation + window-builder consts
+- O(N log N) inverse MLT — DCT-IV fold + odd-bin FFT, definition-equal
+- README — §5 synthesis back end + §1.1 real-data finding
+- Driver::synthesized_call — resume-from-blocker RADecode analog
+- post-entropy synthesis backend — FrameSpectrum → per-call PCM
+- frame → per-call PCM carry buffer — validator cadence assembler
+- PCM emission stage — 16-bit LE conversion + stereo interleave
+- §5 streaming synthesis engine — iMLT → window → gain → overlap-add
+- §5 inverse MLT closed form — definition-level iMDCT + forward companion
+- §5 full Princen-Bradley window — mirror completion of the stored half
+- README + CHANGELOG — §2.2 index decomp, §4.1 coupling control, §5 output stage
+- §5 window_and_gain — compose per-block windowing then §1 gain
+- §5 output stage — MDCT windowing + overlap-add + mix weights
+- §4.1 joint-stereo coupling-control read (mode dispatch + fixed-width index)
+- §2.2 division-free quantiser-index decomposition (0x8fac reciprocal-multiply)
+- README + CHANGELOG — post-entropy reconstruction → iMDCT-input pipeline
+- frame-body integration — post-entropy → iMDCT-input spectrum, mono/stereo routed
+- §4.2 joint-stereo decouple — coupled spectrum → L/R via mirror rotation
+- §3.1 post-entropy per-band/spectrum reconstruction toward iMDCT input
+- README + CHANGELOG — §2.2 quantiser closed form + §3.1 dequant/grouping
+- §3.1 per-band symbol/coefficient grouping arithmetic
+- §3.1 dequant scale triple + spectral-coefficient assembly
+- §2.2 full per-band quantiser closed form (clip·round·divisor)
+- frame-body orchestrator — drive §0–§3 walk to the §3.2 BSS blocker
+- §1.2 gain-envelope expansion + time-domain application
+- §2.1 subband → spectral-coefficient-range geometry
+- gain-control envelope (frame-syntax part 1) — segment count + sqrt(2) gain ladder
+- MSB-first big-endian frame bit reader (spec/05 §0.1)
+- wire round-5 backend frame-syntax codebook geometry + joint-stereo rotation (spec/05 §2.2/§3.1/§4.2)
+- bridge per-category gain index to shared 2^(k/2) scale ladder
+- refresh to current status, drop per-round changelog cruft
+- type the RAGetFlavorProperty property-ID dispatch (spec/01 §4.2)
+- type the RealAudio codec SPI export surface (spec/01 §2)
+- typed joint-stereo / coupling-mode classification of the two flavor selectors (spec/02 §1)
+- per-band gain magnitude (bias + |sample| * step) + level-count clip (cook.dll!0x69f0)
+- typed accessors for the 11-entry averaging-divisor table (cook.dll!0xa7a8)
+- Add typed MDCT half-window accessors (mdct module)
+- RADecode flags decode/observe gate — observe path implemented (zeroed overlap-add output)
+- typed exponent-indexed accessors for the two 127-entry ladders (0x91fc 2^k / 0x93f8 2^(k/2)) + audit-#15 sub-pointer reconciliation
+- typed LUT accessor for cook.dll!0x8c40 (51 → 0..=19)
+- drop release-plz.toml — use release-plz defaults across the workspace
+- typed playable / sentinel discriminator + RAGetNumberOfFlavors* constants
+- typed Descriptor::recover_samples_per_frame accessor
+- structural geometry validation guard
+- wire per-category gain/quantiser parameter bundle
+- Round 10: per-call Driver orchestrator + decode_call entry point
+- Round 9: RADecode call-sequence session state
+- Round 8: per-RADecode sub-packet split + PCM offset accounting
+- Round 7: typed selector-family classification + per-family GAP errors
+- Round 6: per-buffer XOR descramble + CommonMode toggle
+- Round 5: cookie→flavor multi-match API + iter walker
+- Round 4: wire-level real-stream cross-check against FUN_RM_32.rm
+- Round 3: wire validator-confirmed open-time decoder geometry
+- release v0.0.2 ([#3](https://github.com/OxideAV/oxideav-cook/pull/3))
+- Round 2: vendor 8 extracted DSP tables with self-validating loaders
+- Round 1: flavor geometry table loader + extradata cookie parser
+- Round 0 — clean-room rebuild scaffold (orphan master)
+
 ### Changed
 
 - edition 2024, MSRV 1.95.
