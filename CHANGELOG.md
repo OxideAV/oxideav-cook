@@ -6,6 +6,12 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/OxideAV/oxideav-cook/compare/v0.0.3...v0.0.4) - 2026-11-07
+
+### Other
+
+- API hygiene: non_exhaustive public records + constructors
+
 ### Added
 
 - `CookCookie::new` and `FlavorRecord::new` constructors plus `with_<field>` setters for building those records outside the crate.
